@@ -170,11 +170,19 @@ impl EquivalenceRule {
                     }
                 }
                 if let Formula::Or(left, right) = formula {
-                    if let (Formula::And(p1, q), Formula::And(p2, r)) = (left.as_ref(), right.as_ref()) {
+                    if let (Formula::And(p1, q1), Formula::And(p2, r1)) = (left.as_ref(), right.as_ref()) {
+                        // Left-factor case: (P∧Q) ∨ (P∧R) → P ∧ (Q ∨ R)
                         if p1 == p2 {
                             results.push(Formula::And(
                                 p1.clone(),
-                                Box::new(Formula::Or(q.clone(), r.clone())),
+                                Box::new(Formula::Or(q1.clone(), r1.clone())),
+                            ));
+                        }
+                        // Right-factor case: (Q∧P) ∨ (R∧P) → (Q ∨ R) ∧ P
+                        if q1 == r1 {
+                            results.push(Formula::And(
+                                Box::new(Formula::Or(p1.clone(), p2.clone())),
+                                q1.clone(),
                             ));
                         }
                     }
@@ -190,11 +198,19 @@ impl EquivalenceRule {
                     }
                 }
                 if let Formula::And(left, right) = formula {
-                    if let (Formula::Or(p1, q), Formula::Or(p2, r)) = (left.as_ref(), right.as_ref()) {
+                    if let (Formula::Or(p1, q1), Formula::Or(p2, r1)) = (left.as_ref(), right.as_ref()) {
+                        // Left-factor case: (P∨Q) ∧ (P∨R) → P ∨ (Q ∧ R)
                         if p1 == p2 {
                             results.push(Formula::Or(
                                 p1.clone(),
-                                Box::new(Formula::And(q.clone(), r.clone())),
+                                Box::new(Formula::And(q1.clone(), r1.clone())),
+                            ));
+                        }
+                        // Right-factor case: (Q∨P) ∧ (R∨P) → (Q ∧ R) ∨ P
+                        if q1 == r1 {
+                            results.push(Formula::Or(
+                                Box::new(Formula::And(p1.clone(), p2.clone())),
+                                q1.clone(),
                             ));
                         }
                     }
@@ -444,6 +460,46 @@ mod tests {
         let forms = EquivalenceRule::Exportation.equivalent_forms(&formula);
         assert!(forms.contains(&expected));
     }
+    #[test]
+    fn test_distribution_and_over_or_backward_left_factor() {
+        // (P & Q) | (P & R) → P & (Q | R)
+        let formula = Formula::parse("(P & Q) | (P & R)").unwrap();
+        let expected = Formula::parse("P & (Q | R)").unwrap();
+
+        let forms = EquivalenceRule::Distribution.equivalent_forms(&formula);
+        assert!(forms.contains(&expected), "Left-factor And-over-Or backward should work");
+    }
+
+    #[test]
+    fn test_distribution_and_over_or_backward_right_factor() {
+        // (Q & P) | (R & P) → (Q | R) & P
+        let formula = Formula::parse("(Q & P) | (R & P)").unwrap();
+        let expected = Formula::parse("(Q | R) & P").unwrap();
+
+        let forms = EquivalenceRule::Distribution.equivalent_forms(&formula);
+        assert!(forms.contains(&expected), "Right-factor And-over-Or backward should work");
+    }
+
+    #[test]
+    fn test_distribution_or_over_and_backward_left_factor() {
+        // (P | Q) & (P | R) → P | (Q & R)
+        let formula = Formula::parse("(P | Q) & (P | R)").unwrap();
+        let expected = Formula::parse("P | (Q & R)").unwrap();
+
+        let forms = EquivalenceRule::Distribution.equivalent_forms(&formula);
+        assert!(forms.contains(&expected), "Left-factor Or-over-And backward should work");
+    }
+
+    #[test]
+    fn test_distribution_or_over_and_backward_right_factor() {
+        // (Q | P) & (R | P) → (Q & R) | P
+        let formula = Formula::parse("(Q | P) & (R | P)").unwrap();
+        let expected = Formula::parse("(Q & R) | P").unwrap();
+
+        let forms = EquivalenceRule::Distribution.equivalent_forms(&formula);
+        assert!(forms.contains(&expected), "Right-factor Or-over-And backward should work");
+    }
+
     #[test]
     fn test_implication_subformula() {
         let formula = Formula::parse("~(P -> Q)").unwrap();
