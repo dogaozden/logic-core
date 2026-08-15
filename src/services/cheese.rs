@@ -402,6 +402,37 @@ mod tests {
         assert!(r.subformula_decoy.is_none());
     }
 
+    // ── Round 2: positive-path coverage (subformula_decoy actually firing) ──
+    //
+    // Every test above that touches subformula_decoy asserts `.is_none()`;
+    // none proves the field is ever `Some`. These two do, on straightforward
+    // Add-shortcut shapes: a conjunct of the antecedent (or a premise) that
+    // alone already entails the target via the disjunction-introduction
+    // pattern (`P` entails `P v anything`).
+
+    #[test]
+    fn decoy_fires_on_add_shortcut_shape() {
+        // Antecedent "P.Q": its left conjunct "P" alone already entails the
+        // consequent "P v Q v Z" (Add), independent of "Q" or "Z". Checked
+        // via subformulas() in left-to-right order, so "P" is found before
+        // "Q" is ever considered.
+        let c = f("(P . Q) > (P v Q v Z)");
+        let r = cheese_check(&[], &c, 3);
+        assert_eq!(r.subformula_decoy, Some(f("P")));
+    }
+
+    #[test]
+    fn decoy_fires_from_premises() {
+        // No implication-shaped conclusion here (conclusion is a bare "P v
+        // Z", not "~A v B" — left disjunct "P" isn't a Not), so this only
+        // exercises the premises branch: proper subformula "P" of the
+        // premise "P . Junk" alone already entails "P v Z" (Add); "Junk" is
+        // unused ballast, real or fake.
+        let c = f("P v Z");
+        let r = cheese_check(&[f("P . Junk")], &c, 3);
+        assert_eq!(r.subformula_decoy, Some(f("P")));
+    }
+
     #[test]
     fn decoy_check_catches_mixed_standard_and_nonstandard_atom_bug() {
         // Genuinely discriminating (verified: fails under the old u32 path,
