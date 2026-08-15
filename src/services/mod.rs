@@ -9,6 +9,7 @@ pub mod proof_search;
 pub mod obfuscate_gen;
 pub mod prover;
 pub mod cheese;
+pub mod serve_filter;
 
 pub use verifier::*;
 pub use generator::*;
@@ -21,3 +22,4 @@ pub use proof_search::*;
 pub use obfuscate_gen::*;
 pub use prover::*;
 pub use cheese::*;
+pub use serve_filter::*;
