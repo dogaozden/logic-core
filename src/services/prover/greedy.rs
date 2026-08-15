@@ -4,15 +4,17 @@
 //! Its purpose is diagnostic, not competitive: it measures how many Fitch lines a
 //! diligent-but-strategically-blind student would need to grind out a theorem, and
 //! it flags "hallways" — theorems where the philosopher never faced a real choice
-//! (`single_path == true`). A hallway is the Round 9 failure mode: a theorem that
-//! *looks* hard because it's long, but is actually mechanical top to bottom.
+//! (`single_path == true`), counted per-iteration with no cross-iteration dedup.
 //!
-//! Open question (see `round9_hallway_greedy_solves_single_path` and
-//! task-7-report.md): under the current per-iteration branch_points accounting,
-//! R9 itself measures `single_path == false` (an unchosen HS alternative persists
-//! alongside the MP relay for several rounds). Whether that's the right definition
-//! of "hallway" is unresolved; treat this file's R9 test as a live, honest failure
-//! documenting the disagreement, not as a demonstration that R9 is single-path.
+//! Round 9 is *not* an example of a hallway under this counting (RULED 2026-08-15,
+//! see `round9_hallway_greedy_solves_single_path` and task-7-report.md): the
+//! tournament record shows two distinct legal 11-line routes (the MP relay and a
+//! "double-HS" route), so `single_path == false` there is correct — R9 genuinely
+//! had a choice at several steps, even though greedy's fixed priority always took
+//! the same one. R9 is still correctly flagged downstream, just by the serve
+//! filter's divergence gate (greedy length vs. optimal length: no daylight)
+//! instead of this hallway gate. The hallway gate remains meaningful for theorems
+//! with literally zero legal alternatives anywhere along the path.
 
 use crate::models::Formula;
 use crate::models::rules::technique::ProofTechnique;
@@ -286,6 +288,15 @@ mod tests {
         Formula::parse(s).unwrap()
     }
 
+    // RULED (2026-08-15): single_path=false is correct, not a counting bug. The
+    // tournament record shows Round 9 had two distinct legal 11-line routes (the MP
+    // relay and the "double-HS" route), so choice-existence along the way is real —
+    // the spec's literal "hallway = zero legal alternatives anywhere" definition
+    // fails its own motivating example here. branch_points counting stays as
+    // per-iteration, undeduped (see the trace in task-7-report.md). Round 9 is
+    // still correctly rejected downstream — by the serve filter's divergence gate
+    // (greedy 11 vs optimal ~11 → no daylight), not by the hallway gate. The
+    // hallway gate remains meaningful for theorems with literally zero choice.
     #[test]
     fn round9_hallway_greedy_solves_single_path() {
         // 11 in tournament play; greedy reproduces it: 1 ACP + 6 Simp + 3 MP + 1 CP.
@@ -293,26 +304,8 @@ mod tests {
         let out = greedy_prove(&[], &goal, 40);
         let proof = out.proof.expect("greedy must solve the hallway");
         assert_eq!(proof.line_count, 11, "got {}", proof.line_count);
-
-        // KNOWN NUANCE (flagged in the Task 7 dispatch, verified true on this build):
-        // this assertion currently FAILS. branch_points is 10, not 0, so single_path
-        // is false. Verified with an instrumented run (full per-iteration trace in
-        // task-7-report.md) — this is not a counting bug. Two real sources of
-        // alternative-but-unchosen candidates exist along the forced path:
-        //   (1) Simp offers both conjuncts of a freshly-derived And in the same round
-        //       (rounds at state_len 1, 3, 5: unpacking the nested premise), and
-        //   (2) once P⊃Q and Q⊃R are both in state, HS(P⊃Q,Q⊃R)->P⊃R is a legal
-        //       second move alongside every subsequent MP step, and once Q⊃R and
-        //       R⊃S are both in state, HS(Q⊃R,R⊃S)->Q⊃S is too — both persist,
-        //       unchosen, for all 3 remaining MP rounds (greedy's fixed priority
-        //       always prefers MP), each re-counted per the spec's per-iteration
-        //       accounting rule (not deduped across iterations).
-        // Per the Task 7 dispatch, this outcome is anticipated: do not fudge
-        // branch_points or weaken this assertion to make it pass. Left red,
-        // reported DONE_WITH_CONCERNS, pending a controller ruling on whether
-        // "hallway" should mean "forced path taken" (true here) or "no syntactic
-        // alternative ever existed at any point" (false here, as currently spec'd).
-        assert!(out.single_path, "R9 is a hallway: every move forced");
+        assert!(!out.single_path, "R9 legitimately has route choices — tournament record: MP relay vs double-HS");
+        assert!(out.branch_points > 0);
     }
 
     #[test]
