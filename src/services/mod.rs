@@ -7,6 +7,7 @@ pub mod tree_gen;
 pub mod truth_table;
 pub mod proof_search;
 pub mod obfuscate_gen;
+pub mod prover;
 
 pub use verifier::*;
 pub use generator::*;
@@ -17,3 +18,4 @@ pub use tree_gen::*;
 pub use truth_table::*;
 pub use proof_search::*;
 pub use obfuscate_gen::*;
+pub use prover::*;
