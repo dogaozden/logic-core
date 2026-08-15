@@ -432,8 +432,20 @@ fn try_add(
 }
 
 /// Conj toward `And(l, r)`: sweeps how many lines go to the left conjunct
-/// (`l_budget` from 1 up to `budget - 1`) rather than fixing it at a single
-/// value. This matters for two compounding reasons:
+/// (`l_budget` from 0 up to `budget - 1`) rather than fixing it at a single
+/// value. The `l_budget == 0` case matters on its own: `search` returns the
+/// 0-line trivial proof for any `l` already present in `state` (its "state
+/// contains goal" base case runs before its `budget == 0` guard), so this is
+/// how a plain 1-line `Conj` closure -- both conjuncts already known, cite
+/// both, done -- gets found at all. Skipping it (an earlier version of this
+/// loop started at 1) meant `try_conj` unconditionally failed at `budget ==
+/// 1` even when the And-goal was trivially one Conj line away, and since
+/// `forward_moves` never emits `Conj`, `try_conj` is the ONLY route to
+/// And-goals -- so that false failure got memoized and poisoned every route
+/// through that (state, goal) pair for the rest of the search, not just this
+/// call (ruled 2026-08-15, round 3; see `conj_at_budget_one_finds_the_trivial_split`).
+/// Sweeping the rest of the range (1 and up) matters for two more,
+/// compounding reasons:
 ///
 /// 1. `search(state, l, B, ctx)` returns the FIRST proof of `l` it finds in
 ///    priority-move order at budget `B` — not necessarily the shortest one
@@ -468,7 +480,7 @@ fn try_conj(
     if budget < 1 {
         return Ok(None);
     }
-    for l_budget in 1..budget {
+    for l_budget in 0..budget {
         let Some(sub_l_steps) = search(state, l, l_budget, ctx)? else {
             continue;
         };
@@ -932,6 +944,30 @@ mod tests {
                 assert!(minimal_proven, "cap=128 must restore certification on this small witness");
             }
             _ => panic!("must still prove C in 3 lines at the raised cap"),
+        }
+    }
+
+    #[test]
+    // Re-review finding (2026-08-15, round 3): `try_conj`'s sweep loop started at
+    // `l_budget = 1`, so `1..budget` is EMPTY when `budget == 1` and the function
+    // unconditionally returned `Ok(None)` -- even though both conjuncts are
+    // already premises here, making `P . Q` a single Conj line away. Since
+    // `forward_moves` never emits `Conj`, this was the ONLY route to an And-goal,
+    // so this wasn't just a missed shortcut: it was a hard completeness hole at
+    // budget 1, and the false failure would have been memoized, poisoning every
+    // other route through this (state, goal) pair. Fixed by starting the sweep at
+    // `l_budget = 0`, which lets `search`'s "state already contains goal" base
+    // case supply the trivial 0-line half-proof for each conjunct.
+    fn conj_at_budget_one_finds_the_trivial_split() {
+        let premises = [f("P"), f("Q")];
+        let goal = f("P . Q");
+        let cfg = OptimalConfig { max_lines: 1, ..OptimalConfig::default() };
+        match optimal_prove(&premises, &goal, &cfg) {
+            OptimalOutcome::Proved { proof, minimal_proven } => {
+                assert_eq!(proof.line_count, 1);
+                assert!(minimal_proven);
+            }
+            other => panic!("P, Q must Conj into P . Q in exactly 1 line: got {:?}", other),
         }
     }
 }
