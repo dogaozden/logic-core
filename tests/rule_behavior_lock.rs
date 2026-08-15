@@ -77,3 +77,23 @@ fn equiv_form_one_both_directions() {
     assert!(equiv_reaches(EquivalenceRule::Equivalence, "P <-> Q", "(P > Q) . (Q > P)"));
     assert!(equiv_reaches(EquivalenceRule::Equivalence, "(P > Q) . (Q > P)", "P <-> Q"));
 }
+
+#[test]
+fn equiv_form_two_both_directions() {
+    // Hurley's second form, ratified by Doğa 2026-08-15
+    assert!(equiv_reaches(EquivalenceRule::Equivalence, "P <> Q", "(P . Q) v (~P . ~Q)"));
+    assert!(equiv_reaches(EquivalenceRule::Equivalence, "(P . Q) v (~P . ~Q)", "P <> Q"));
+}
+
+#[test]
+fn biconditional_diamond_token_parses() {
+    // prompt.ts teaches `<>`; ascii_string_bracketed() emits it — the parser must accept it
+    assert_eq!(f("P <> Q"), f("P <-> Q"));
+}
+
+#[test]
+fn biconditional_round_trips_through_bracketed_ascii() {
+    let original = f("P <-> Q");
+    let emitted = original.ascii_string_bracketed();
+    assert_eq!(Formula::parse(&emitted).unwrap(), original);
+}

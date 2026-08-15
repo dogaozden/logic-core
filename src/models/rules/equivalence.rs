@@ -267,6 +267,27 @@ impl EquivalenceRule {
                         }
                     }
                 }
+
+                // (p ≡ q) :: [(p · q) ∨ (~p · ~q)]  — Hurley's second form (ratified 2026-08-15)
+                if let Formula::Biconditional(p, q) = formula {
+                    results.push(Formula::Or(
+                        Box::new(Formula::And(p.clone(), q.clone())),
+                        Box::new(Formula::And(
+                            Box::new(Formula::Not(p.clone())),
+                            Box::new(Formula::Not(q.clone())),
+                        )),
+                    ));
+                }
+                // From (p · q) ∨ (~p · ~q) back to p ≡ q
+                if let Formula::Or(left, right) = formula {
+                    if let (Formula::And(p1, q1), Formula::And(np, nq)) = (left.as_ref(), right.as_ref()) {
+                        if let (Formula::Not(p2), Formula::Not(q2)) = (np.as_ref(), nq.as_ref()) {
+                            if p1 == p2 && q1 == q2 {
+                                results.push(Formula::Biconditional(p1.clone(), q1.clone()));
+                            }
+                        }
+                    }
+                }
             }
 
             EquivalenceRule::Exportation => {

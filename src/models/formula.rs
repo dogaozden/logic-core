@@ -561,7 +561,7 @@ impl<'a> FormulaParser<'a> {
     fn parse_biconditional(&mut self) -> Result<Formula, ParseError> {
         let mut left = self.parse_implication()?;
         self.skip_whitespace();
-        while self.matches("<->") || self.matches("≡") || self.matches("<=>") {
+        while self.matches("<->") || self.matches("≡") || self.matches("<=>") || self.matches("<>") {
             self.enter_depth()?;
             let right = self.parse_implication()?;
             left = Formula::Biconditional(Box::new(left), Box::new(right));
