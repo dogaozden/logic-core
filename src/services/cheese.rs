@@ -18,13 +18,105 @@
 //! None of these are exhaustive proofs of degeneracy — they're heuristic,
 //! cheap-to-compute red flags meant to reject candidate theorems before they
 //! reach the (much more expensive) prover stage.
+//!
+//! ## Truth-table engine: dynamic only, never the u32 fast path
+//!
+//! `services::truth_table`'s u32 engine (`is_tautology`/`are_equivalent`/
+//! `entails`) only recognizes the literal atom names P, Q, R, S, T —
+//! `var_truth_table` silently defaults every OTHER atom name to P's own
+//! pattern (`truth_table.rs`, `_ => 0xFFFF0000`). `obfuscate_gen::build_atom_pool`
+//! only stays within P–T for theorems with ≤5 atoms; anything with 6+ (the
+//! harder generator tiers routinely go there) pulls in A, B, C, D, ... . Two
+//! *different* non-standard atoms would then collapse onto the identical
+//! bit pattern, silently merging distinct propositional variables into one —
+//! e.g. `is_tautology("A > B")` would wrongly evaluate as `P > P` (always
+//! true) instead of correctly seeing A and B as independent. Every semantic
+//! check in this file therefore goes through the dynamic engine
+//! (`is_tautology_dynamic`, plus the local `are_equivalent_dynamic` /
+//! `entails_dynamic` below — the crate only exposes a dynamic tautology
+//! check, not dynamic equivalence/entailment, so those two are hand-rolled
+//! here from `DynTruthTable`'s public combinators), which builds each
+//! formula's table over its own real atoms instead of a fixed P–T slot map.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::models::rules::equivalence::EquivalenceRule;
 use crate::models::Formula;
 
-use super::truth_table::{are_equivalent, entails, is_tautology};
+use super::truth_table::{is_tautology_dynamic, DynTruthTable};
+
+/// The sorted union of every atom appearing across `formulas` — the shared
+/// variable universe two (or more) formulas must be evaluated over before
+/// their `DynTruthTable`s are comparable. `compute_truth_table_dynamic`
+/// (crate-level) builds this per-formula, which is fine for a single-formula
+/// tautology check but wrong for comparing two formulas: each would get its
+/// OWN independent atom-to-index mapping, so bit position `0` could mean "A"
+/// in one table and "C" in the other. Sharing one mapping across both sides
+/// of a comparison is what `compute_truth_table_dynamic` alone can't give us.
+fn atom_universe(formulas: &[&Formula]) -> Vec<String> {
+    let mut atoms: BTreeSet<String> = BTreeSet::new();
+    for f in formulas {
+        atoms.extend(f.atoms());
+    }
+    atoms.into_iter().collect()
+}
+
+/// Evaluate `formula` into a `DynTruthTable` over an EXTERNALLY-supplied
+/// atom→index mapping (rather than one derived from `formula`'s own atoms
+/// alone), so two formulas evaluated against the same `index`/`num_vars`
+/// produce directly-comparable tables. Mirrors `truth_table::eval_dyn`
+/// (private to that module, so reimplemented here) via `DynTruthTable`'s
+/// public combinators. An atom missing from `index` (shouldn't happen when
+/// `index` was built via `atom_universe` over every formula in play) falls
+/// back to an all-true table, matching the crate's own defensive convention
+/// in `eval_dyn` — deliberately NOT index 0, so an unmapped atom doesn't
+/// silently alias onto whichever atom happens to occupy that slot.
+fn dyn_table_over(formula: &Formula, index: &HashMap<&str, u8>, num_vars: u8) -> DynTruthTable {
+    match formula {
+        Formula::Atom(name) => match index.get(name.as_str()) {
+            Some(&idx) => DynTruthTable::new_var(idx, num_vars),
+            None => DynTruthTable::tautology(num_vars),
+        },
+        Formula::Not(inner) => dyn_table_over(inner, index, num_vars).not(),
+        Formula::And(l, r) => {
+            dyn_table_over(l, index, num_vars).and(&dyn_table_over(r, index, num_vars))
+        }
+        Formula::Or(l, r) => {
+            dyn_table_over(l, index, num_vars).or(&dyn_table_over(r, index, num_vars))
+        }
+        Formula::Implies(l, r) => {
+            dyn_table_over(l, index, num_vars).implies(&dyn_table_over(r, index, num_vars))
+        }
+        Formula::Biconditional(l, r) => {
+            dyn_table_over(l, index, num_vars).biconditional(&dyn_table_over(r, index, num_vars))
+        }
+        Formula::Contradiction => DynTruthTable::contradiction(num_vars),
+    }
+}
+
+/// Semantic equivalence over the dynamic engine, safe for any atom names —
+/// see the module-level note on why the u32 fast path can't be used here.
+fn are_equivalent_dynamic(a: &Formula, b: &Formula) -> bool {
+    let atoms = atom_universe(&[a, b]);
+    let num_vars = atoms.len().max(1) as u8;
+    let index: HashMap<&str, u8> = atoms.iter().enumerate().map(|(i, s)| (s.as_str(), i as u8)).collect();
+    dyn_table_over(a, &index, num_vars).eq(&dyn_table_over(b, &index, num_vars))
+}
+
+/// Semantic entailment over the dynamic engine, safe for any atom names —
+/// see the module-level note on why the u32 fast path can't be used here.
+fn entails_dynamic(premises: &[Formula], conclusion: &Formula) -> bool {
+    let mut all: Vec<&Formula> = premises.iter().collect();
+    all.push(conclusion);
+    let atoms = atom_universe(&all);
+    let num_vars = atoms.len().max(1) as u8;
+    let index: HashMap<&str, u8> = atoms.iter().enumerate().map(|(i, s)| (s.as_str(), i as u8)).collect();
+    let combined = premises.iter().fold(DynTruthTable::tautology(num_vars), |acc, p| {
+        acc.and(&dyn_table_over(p, &index, num_vars))
+    });
+    let conclusion_tt = dyn_table_over(conclusion, &index, num_vars);
+    combined.and(&conclusion_tt.not()).is_contradiction()
+}
 
 /// Report of cheap cheese checks run against a candidate theorem. Each field
 /// is `None` when that particular defect wasn't found; all three checks run
@@ -60,7 +152,7 @@ pub fn cheese_check(
         Some((_, consequent)) => consequent.clone(),
         None => conclusion.clone(),
     };
-    let tautologous_disjunct = flatten_or(&disjunct_target).into_iter().find(is_tautology);
+    let tautologous_disjunct = flatten_or(&disjunct_target).into_iter().find(is_tautology_dynamic);
 
     let mut subformula_decoy = parts
         .as_ref()
@@ -122,13 +214,13 @@ fn flatten_or(f: &Formula) -> Vec<Formula> {
 /// false-positive on the atom nested inside `R > S`.
 fn find_decoy(container: &Formula, target: &Formula) -> Option<Formula> {
     for s in container.subformulas() {
-        if &s == container || are_equivalent(&s, container) {
+        if &s == container || are_equivalent_dynamic(&s, container) {
             continue;
         }
-        if &s == target || are_equivalent(&s, target) {
+        if &s == target || are_equivalent_dynamic(&s, target) {
             continue;
         }
-        if entails(std::slice::from_ref(&s), target) {
+        if entails_dynamic(std::slice::from_ref(&s), target) {
             return Some(s);
         }
     }
@@ -145,7 +237,7 @@ fn find_decoy(container: &Formula, target: &Formula) -> Option<Formula> {
 /// one rule. Visited formulas are deduped on `ascii_string()` rather than
 /// `Formula` equality directly, per the task brief.
 pub fn rewrite_distance(a: &Formula, b: &Formula, max: usize) -> Option<usize> {
-    if !are_equivalent(a, b) {
+    if !are_equivalent_dynamic(a, b) {
         return None;
     }
     if a == b {
@@ -232,5 +324,103 @@ mod tests {
     fn single_impl_rewrite_is_distance_1() {
         assert_eq!(rewrite_distance(&f("P > Q"), &f("~P v Q"), 3), Some(1));
         assert_eq!(rewrite_distance(&f("P"), &f("Q"), 3), None); // not even equivalent
+    }
+
+    // ── Fix round 1: dynamic truth tables (generator atoms exceed P/Q/R/S/T) ──
+    //
+    // Regression coverage for the u32-fast-path bug: `var_truth_table`
+    // defaulted every non-P..T atom to P's own bit pattern, so two distinct
+    // "unknown" atoms were silently treated as the same variable. The
+    // generator's real atom pool (`obfuscate_gen::build_atom_pool`) goes past
+    // P–T for any theorem with 6+ atoms, so this was live for real generated
+    // theorems, not just a hypothetical.
+
+    #[test]
+    fn no_false_tautologous_disjunct_with_non_standard_atoms() {
+        // Literal case from the fix-round finding: under the old path, "A"
+        // and "B" both defaulted to P's pattern. As implemented, flatten_or
+        // splits "A v ~B" into two single-atom disjuncts (A, ~B) — neither
+        // was ever individually mistaken for a tautology even under the old
+        // bug (a bare atom's collapsed pattern is never all-true), so this is
+        // a direct sanity check of the requested scenario rather than a case
+        // that flips old-vs-new. See the next test for one that actually
+        // does flip.
+        let c = f("A v ~B");
+        let r = cheese_check(&[], &c, 3);
+        assert!(r.tautologous_disjunct.is_none());
+    }
+
+    #[test]
+    fn no_false_tautologous_disjunct_for_compound_non_flattened_disjunct() {
+        // Genuinely discriminating: "A > B" is ONE disjunct (Implies isn't
+        // Or, so flatten_or doesn't split it further). Under the OLD u32
+        // path, A and B both collapsed to P's pattern, making "A > B"
+        // evaluate as "P > P" — always true — wrongly flagging it as a
+        // tautologous disjunct. With A and B genuinely independent, "A > B"
+        // is not a tautology (A=true, B=false is a counterexample), so
+        // neither disjunct should trigger under the fixed dynamic path.
+        let c = f("(A > B) v C");
+        let r = cheese_check(&[], &c, 3);
+        assert!(r.tautologous_disjunct.is_none());
+    }
+
+    #[test]
+    fn rewrite_distance_is_correct_with_non_standard_atoms() {
+        // Requested literal case. Note this one does NOT actually flip
+        // old-vs-new: both sides of "A > B" / "~A v B" collapse to the same
+        // degenerate all-true pattern under the old bug too (P>P and ~PvP
+        // are both tautologies), so the old `are_equivalent` gate happened to
+        // return true here for the wrong reason, and rewrite_distance's BFS
+        // is purely syntactic (equivalence rules never rename atoms, and the
+        // goal check is structural `Formula` equality) — so it would have
+        // found the same real 1-step Implication rewrite regardless. Kept
+        // as explicit end-to-end coverage that the function is now actually
+        // exercised with generator-realistic atoms, which it never was
+        // before this fix round.
+        assert_eq!(rewrite_distance(&f("A > B"), &f("~A v B"), 3), Some(1));
+    }
+
+    #[test]
+    fn decoy_check_stays_clean_for_pure_non_standard_atoms() {
+        // Sanity check, NOT a discriminating regression test — see the next
+        // test for one that actually flips old-vs-new. Every formula built
+        // ENTIRELY from non-P..T atoms collapses under the old bug to one of
+        // only 4 possible u32 patterns (P, ~P, tautology, or contradiction —
+        // a formula evaluated with every "variable" tied to the same signal
+        // is necessarily a function of one boolean input, and a 1-input
+        // boolean function has only 4 possible truth tables). Among those 4,
+        // the only non-self entailments are "anything entails tautology" and
+        // "contradiction entails anything" — both real, valid entailments
+        // even under correct semantics, not bugs. So two DIFFERENT-shaped
+        // all-non-standard subformulas can only get a false-positive
+        // `entails` by collapsing to the IDENTICAL pattern, which is exactly
+        // what `find_decoy`'s existing "skip if equivalent" filters already
+        // catch (added for the round9 fix) — they incidentally close this
+        // bug's attack surface too, for the pure-non-standard case.
+        let c = f("(A . B) > C");
+        let r = cheese_check(&[], &c, 3);
+        assert!(r.subformula_decoy.is_none());
+    }
+
+    #[test]
+    fn decoy_check_catches_mixed_standard_and_nonstandard_atom_bug() {
+        // Genuinely discriminating (verified: fails under the old u32 path,
+        // passes under the fix). A non-standard atom defaults to EXACTLY
+        // real P's bit pattern under the old bug, so it inherits whatever
+        // real relationships P happens to have — here, P's real entailment
+        // of "P v Q" (Add). Antecedent "A . R": proper subformula "A" is a
+        // completely independent variable in truth, but under the bug its
+        // collapsed pattern is a subset of "P v Q"'s true-rows purely
+        // because it LOOKS like P, wrongly flagging "A" as a decoy. "R" is
+        // there only so the antecedent is a genuine conjunction; it plays no
+        // role in triggering (or avoiding) the bug. This mixed shape is also
+        // the realistic one: `build_atom_pool` always includes all of P..T
+        // before adding any extended letter, so any real 6+-atom generated
+        // theorem necessarily mixes both ranges in one formula — a pure
+        // A/B/C-only formula (previous test) could never actually come out
+        // of the generator.
+        let c = f("(A . R) > (P v Q)");
+        let r = cheese_check(&[], &c, 3);
+        assert!(r.subformula_decoy.is_none());
     }
 }
