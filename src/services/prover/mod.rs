@@ -7,6 +7,8 @@
 
 pub mod moves;
 pub mod greedy;
+pub mod optimal;
 
 pub use moves::{Move, forward_moves};
 pub use greedy::{ProofStep, FoundProof, GreedyOutcome, greedy_prove};
+pub use optimal::{OptimalConfig, OptimalOutcome, optimal_prove};

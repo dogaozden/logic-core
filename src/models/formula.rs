@@ -19,7 +19,7 @@ pub enum PathStep {
 }
 
 /// Represents a propositional logic formula
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
 pub enum Formula {
     Atom(String),
