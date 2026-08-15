@@ -102,11 +102,18 @@ impl ProofTreeGenerator {
     /// Falls back to the old forward algorithm and templates if backward fails.
     pub fn generate(&mut self) -> ProofTree {
         let mut rng = rand::thread_rng();
+        self.generate_with_rng(&mut rng)
+    }
+
+    /// Generate a complete proof tree using the given RNG. Same algorithm as
+    /// `generate()`, but deterministic for a given seeded `rng` — use this
+    /// for reproducible tests and benchmark sets.
+    pub fn generate_with_rng(&mut self, rng: &mut impl Rng) -> ProofTree {
         let mut best_tree: Option<ProofTree> = None;
 
         // First try: Use new backward construction algorithm
         for _attempt in 0..(Self::MAX_RETRIES / 2) {
-            if let Ok(tree) = self.generate_backward(&mut rng) {
+            if let Ok(tree) = self.generate_backward(rng) {
                 let validation = tree.validate_with_difficulty(
                     self.config.min_proof_steps,
                     self.config.require_forces_cp,
@@ -125,7 +132,7 @@ impl ProofTreeGenerator {
 
         // Second try: Fall back to old forward generation algorithm
         for attempt in 0..(Self::MAX_RETRIES / 2) {
-            let tree = self.generate_once();
+            let tree = self.generate_once(rng);
 
             // Check for degenerate premises AND minimum proof difficulty AND forcing requirements
             let validation = tree.validate_with_difficulty(
@@ -168,7 +175,7 @@ impl ProofTreeGenerator {
         }
 
         eprintln!("Warning: Could not generate valid proof after {} attempts, using fallback", Self::MAX_RETRIES);
-        self.generate_fallback_theorem(&mut rng)
+        self.generate_fallback_theorem(rng)
     }
 
     /// Generate a proof tree using the new backward construction algorithm.
@@ -310,11 +317,9 @@ impl ProofTreeGenerator {
     }
 
     /// Generate a single proof tree (may be degenerate)
-    fn generate_once(&mut self) -> ProofTree {
-        let mut rng = rand::thread_rng();
-
+    fn generate_once(&mut self, rng: &mut impl Rng) -> ProofTree {
         // Start with a random goal
-        let goal = self.random_interesting_goal(&mut rng);
+        let goal = self.random_interesting_goal(rng);
 
         // Reset state
         self.used_fragments = 0;
@@ -324,7 +329,7 @@ impl ProofTreeGenerator {
         self.combined_premises_tt = TAUTOLOGY;
 
         // Build the proof tree
-        let root = self.build_proof_of(&mut rng, goal);
+        let root = self.build_proof_of(rng, goal);
 
         ProofTree::new(root)
     }
@@ -980,11 +985,20 @@ mod tests {
 
     #[test]
     fn test_multiple_generations() {
-        let mut gen = ProofTreeGenerator::with_difficulty(Difficulty::Medium);
-
-        // Should be able to generate multiple different trees
+        use rand::{rngs::StdRng, SeedableRng};
+        // NOTE: ProofTreeGenerator::with_difficulty() picks a random difficulty
+        // *value* within the tier's range via its own internal, unseeded
+        // rand::thread_rng() (see TreeGenConfig::for_difficulty, context.rs).
+        // That RNG is independent of the one below, so building the generator
+        // with with_difficulty() would leave this test flaky regardless of the
+        // seed pinned here. Pin the config directly via for_difficulty_value()
+        // (35 is within Medium's 26..=45 range and past the CP-forcing
+        // threshold at d>=30) so the whole test is deterministic.
+        let config = TreeGenConfig::for_difficulty_value(35);
+        let mut gen = ProofTreeGenerator::new(config);
+        let mut rng = StdRng::seed_from_u64(0xD06A);
         for _ in 0..3 {
-            let tree = gen.generate();
+            let tree = gen.generate_with_rng(&mut rng);
             assert!(tree.is_valid());
         }
     }

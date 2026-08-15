@@ -33,6 +33,5 @@ use logic_core::services::ProofVerifier;
 cargo test
 ```
 
-Note: `services::tree_gen::builder::tests::test_multiple_generations` is
-flaky. It generates proof trees from an unseeded RNG and fails on roughly
-40% of runs. This predates the extraction of this crate.
+Generation is seedable via `generate_with_rng` for deterministic tests and
+reproducible benchmark sets.
