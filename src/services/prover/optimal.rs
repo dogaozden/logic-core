@@ -31,20 +31,18 @@
 //!    equivalence rule is bidirectional — is exactly what forward equivalence
 //!    (tried first, same pass) already covers exhaustively.
 //!
-//! Two whole-formula candidates are excluded from generation entirely (both
-//! directions): `f` -> `~~f`/`f.f`/`f|f` for the ENTIRE state formula or goal
-//! (not a subformula of it — DN/Tautology-expand at a subformula position, e.g.
-//! `P` -> `~~P` within `P v ~P`, is untouched and still fully explored). These
-//! three are provably never part of a minimal proof: `f.f`/`f|f` reduce to
-//! Conj/Add's natural decomposition (derive `f` once, the duplicate is then
-//! already in state, +1 for the Conj/Add line) before backward-equiv's wrap adds
-//! another +1 to convert back; `~~f` needs an IP detour (assume `~~~f`,
-//! DN-strip, derive `f`, NegE, IP-close) before the wrap adds +1 more. Both
-//! routes cost strictly more than deriving `f` directly, which IDDFS would
-//! always find first if it existed. Without this exclusion, these three
-//! self-referential rewrites compound at every node that touches them (each one
-//! offers 3 more, recursively), which is combinatorially ruinous for theorems
-//! needing many lines — verified this doesn't affect what R3/R10/R11 need.
+//! Whole-formula DoubleNegation/Tautology-expand (`f` -> `~~f`/`f.f`/`f|f` for
+//! the ENTIRE state formula or goal, not a subformula of it) is NOT excluded,
+//! despite superficially looking like a wasteful self-wrap: `~~f` can be a
+//! springboard for a different equivalence rule to rewrite the newly-exposed
+//! inner `~f` into something else entirely (confirmed by a concrete witness —
+//! see `round_whole_dn_wrap_needed_for_minimal_proof` — where `P.Q -> ~~(P.Q)`
+//! exposes `~(P.Q)` for DeMorgan to turn into `~P v ~Q`, producing `~(~P v ~Q)`
+//! as a genuinely new fact, not a useless round-trip back to `P.Q`). An earlier
+//! version of this file excluded these three candidates on a cost argument that
+//! only considered "wrap then immediately unwrap" and missed this case — ruled
+//! unsound and removed. The cap (`equiv_moves_per_state`) is what bounds the
+//! resulting candidate volume, per spec, not a hand-picked exclusion.
 //!
 //! ## Search invariant
 //! Whenever `search` returns `Ok(Some(steps))` with `steps` non-empty, the LAST
@@ -433,8 +431,32 @@ fn try_add(
     Ok(None)
 }
 
-/// Conj toward `And(l, r)`: recurse on `l`, then recurse on `r` from the
-/// `l`-extended state (so the second half can reuse whatever the first derived).
+/// Conj toward `And(l, r)`: sweeps how many lines go to the left conjunct
+/// (`l_budget` from 1 up to `budget - 1`) rather than fixing it at a single
+/// value. This matters for two compounding reasons:
+///
+/// 1. `search(state, l, B, ctx)` returns the FIRST proof of `l` it finds in
+///    priority-move order at budget `B` — not necessarily the shortest one
+///    that fits in `B`. A higher-priority-but-longer route can shadow a
+///    lower-priority-but-shorter one whenever both happen to fit in the same
+///    `B`, so a single non-swept call can hand back a needlessly long left
+///    proof and leave less of `budget` for `r` than a shorter left proof
+///    would have.
+/// 2. Different `l_budget` values can surface genuinely DIFFERENT proofs of
+///    `l` (not just the same proof cut off at different points) — a route
+///    unreachable at a small budget can become reachable, and higher-priority
+///    routes get tried first once they fit. Different proofs of `l` derive
+///    different intermediate facts along the way, and those facts become
+///    part of the state `r` gets searched from. So even a "wastefully" large
+///    `l_budget` can unlock an `r` proof that a shorter, more efficient left
+///    proof would not have — the minimal-length proof of `l` in isolation is
+///    not always the one that best sets up `r`.
+///
+/// Without sweeping, a first-found (non-minimal, or merely differently-shaped)
+/// left proof can starve `r` of budget or of a fact it needed, wrongly failing
+/// a depth at which a valid split actually exists. Since that false failure
+/// gets memoized, it would poison every other route through this exact
+/// (state, goal) pair for the rest of the search — not just this one call.
 fn try_conj(
     state: &[Formula],
     goal: &Formula,
@@ -446,23 +468,26 @@ fn try_conj(
     if budget < 1 {
         return Ok(None);
     }
-    let Some(sub_l_steps) = search(state, l, budget - 1, ctx)? else {
-        return Ok(None);
-    };
+    for l_budget in 1..budget {
+        let Some(sub_l_steps) = search(state, l, l_budget, ctx)? else {
+            continue;
+        };
 
-    let l_idx = resolve_index(state, &sub_l_steps, l);
-    let mut extended_state = state.to_vec();
-    extended_state.extend(sub_l_steps.iter().map(|s| s.formula.clone()));
-    let remaining = budget - 1 - sub_l_steps.len();
-    let Some(sub_r_steps) = search(&extended_state, r, remaining, ctx)? else {
-        return Ok(None);
-    };
+        let l_idx = resolve_index(state, &sub_l_steps, l);
+        let mut extended_state = state.to_vec();
+        extended_state.extend(sub_l_steps.iter().map(|s| s.formula.clone()));
+        let remaining = budget - 1 - sub_l_steps.len();
+        let Some(sub_r_steps) = search(&extended_state, r, remaining, ctx)? else {
+            continue;
+        };
 
-    let r_idx = resolve_index(&extended_state, &sub_r_steps, r);
-    let mut steps = sub_l_steps;
-    steps.extend(sub_r_steps);
-    steps.push(ProofStep { formula: goal.clone(), rule: "Conj".to_string(), cited: vec![l_idx, r_idx] });
-    Ok(Some(steps))
+        let r_idx = resolve_index(&extended_state, &sub_r_steps, r);
+        let mut steps = sub_l_steps;
+        steps.extend(sub_r_steps);
+        steps.push(ProofStep { formula: goal.clone(), rule: "Conj".to_string(), cited: vec![l_idx, r_idx] });
+        return Ok(Some(steps));
+    }
+    Ok(None)
 }
 
 /// Find the absolute transcript index of the line establishing `target`, given the
@@ -516,7 +541,12 @@ fn semantically_entailed(
         atoms.extend(cached_atoms(f, atoms_cache));
     }
     atoms.extend(cached_atoms(goal, atoms_cache));
-    let atoms: Vec<String> = atoms.into_iter().collect();
+    // Sorted rather than left in HashSet-iteration order: which atom lands on
+    // which VAR_COLUMNS index doesn't affect correctness (any consistent
+    // assignment works), but leaving it hash-order-dependent means the exact
+    // exploration/cache-population pattern could vary run-to-run for no reason.
+    let mut atoms: Vec<String> = atoms.into_iter().collect();
+    atoms.sort();
     let n = atoms.len();
 
     if n > 6 {
@@ -660,20 +690,8 @@ fn raw_forward_equiv(
 ) -> Vec<EquivCandidate> {
     let mut out = Vec::new();
     for (i, f) in state.iter().enumerate() {
-        // Whole-formula DoubleNegation/Tautology-expand (`f` -> `~~f`/`f.f`/`f|f`)
-        // is excluded here for the same reason as `raw_goal_equiv`'s whole-goal
-        // exclusion: `f` is already in state, so adding one of these three adds a
-        // line without adding deductive power `f` alone didn't already have
-        // (barring a state formula coincidentally needing `~~f`/`f.f`/`f|f` as a
-        // literal sub-part, which none of the ground-truth theorems do — verified
-        // by re-running R3/R10/R11 after this change).
-        let forbidden = [
-            Formula::Not(Box::new(Formula::Not(Box::new(f.clone())))),
-            Formula::And(Box::new(f.clone()), Box::new(f.clone())),
-            Formula::Or(Box::new(f.clone()), Box::new(f.clone())),
-        ];
         for (rewritten, rule_abbr) in one_step_equiv_rewrites(f, cache) {
-            if !state.contains(&rewritten) && !forbidden.contains(&rewritten) {
+            if !state.contains(&rewritten) {
                 out.push(EquivCandidate { formula: rewritten, rule_abbr, cited: vec![i] });
             }
         }
@@ -687,31 +705,20 @@ fn raw_goal_equiv(
     goal: &Formula,
     cache: &mut HashMap<Formula, Vec<(Formula, &'static str)>>,
 ) -> Vec<EquivCandidate> {
-    // Whole-goal DoubleNegation/Tautology-expand (`G` -> `~~G`/`G.G`/`G|G`, path=[])
-    // is excluded: provably never part of a minimal proof. Proving the wrapped
-    // form costs strictly more than proving `G` directly by the mechanics of how
-    // it would have to be un-wrapped — `G.G`/`G|G` reduce to Conj/Add's natural
-    // decomposition (derive `G` once, the second occurrence is then already in
-    // state, +1 for the Conj/Add line: cost(G)+1) before the backward-equiv wrap
-    // adds another +1 to convert back (cost(G)+2 total); `~~G` needs IP (assume
-    // `~~~G`, DN-strip to `~G`, derive `G`, NegE, IP-close: cost(G)+4) before the
-    // wrap adds +1 more (cost(G)+5). Both are strictly worse than deriving `G`
-    // directly, which IDDFS (trying shorter budgets first) would always reach
-    // first if it existed — so these three candidates can only ever be explored
-    // and fail, at real cost, never win. Verified this doesn't affect R3/R10/R11:
-    // their required whole-goal rewrites (e.g. R11's Or->Implies conversion, R3's
-    // second Impl step) all produce a SMALLER result, never `~~G`/`G.G`/`G|G`, and
-    // DN-expand used at a SUBFORMULA position (R3's first step, `P` -> `~~P`
-    // within `P v ~P`) is untouched — this only excludes the exact whole-goal
-    // wraps, not subformula-level rewrites via the same rules.
-    let forbidden = [
-        Formula::Not(Box::new(Formula::Not(Box::new(goal.clone())))),
-        Formula::And(Box::new(goal.clone()), Box::new(goal.clone())),
-        Formula::Or(Box::new(goal.clone()), Box::new(goal.clone())),
-    ];
+    // NOTE: whole-formula DoubleNegation/Tautology-expand (`f` -> `~~f`/`f.f`/`f|f`)
+    // used to be excluded here (and in `raw_forward_equiv`) on the theory that
+    // proving the wrapped form always costs strictly more than proving `f`
+    // directly. That's false: confirmed by a concrete witness (round_conj_split_*
+    // and a whole-DN-wrap regression test below) where `f -> ~~f` is not "prove f,
+    // then uselessly wrap it" but a springboard for a DIFFERENT equivalence rule to
+    // rewrite the newly-exposed inner `~f` into something else entirely (e.g.
+    // DeMorgan turning the `~(P.Q)` hiding inside `~~(P.Q)` into `~P v ~Q`,
+    // producing `~(~P v ~Q)` as a genuinely new, useful fact). The cost proof only
+    // considered "wrap then immediately unwrap," which is a real but non-exhaustive
+    // use of the rewrite — removed per ruling; whole-formula wraps cost only ~3
+    // extra candidates per formula and the cap already bounds worse blowups.
     one_step_equiv_rewrites(goal, cache)
         .into_iter()
-        .filter(|(formula, _)| !forbidden.contains(formula))
         .map(|(formula, rule_abbr)| EquivCandidate { formula, rule_abbr, cited: vec![] })
         .collect()
 }
@@ -769,24 +776,60 @@ mod tests {
     }
 
     #[test]
+    // minimal_proven=false at the default cap is ruled-accepted (2026-08-15): the
+    // equiv cap (64) is exceeded by subformula-level rewrite candidates on a
+    // formula this size; T12 owns cap tuning, not this test. Line count is still
+    // the ground truth and is what's asserted.
     fn round11_optimal_is_5_lines() {
         let goal = f("~{{[(~R v ~R) > R] . P} . [(S v S) > (Q v ~S)]} v {{[(R > ~R) > R] . P} . {~(Q v ~S) > ~(S v S)}}");
         let out = optimal_prove(&[], &goal, &OptimalConfig::default());
         match out {
             OptimalOutcome::Proved { proof, .. } => {
-                assert_eq!(proof.line_count, 5) // ACP, Impl, Contra, CP, Impl — both players played it
+                assert_eq!(proof.line_count, 5); // ACP, Impl, Contra, CP, Impl — both players played it
             }
             _ => panic!("must find the trench-coat shortcut"),
         }
     }
 
     #[test]
+    // minimal_proven=false at the default cap is ruled-accepted (2026-08-15): same
+    // reason as round11_optimal_is_5_lines above — T12 owns cap tuning.
     fn round10_optimal_is_5_lines_via_left_add() {
         let goal = f("{[(R > ~P) v (P > P)] . {S > [(Q v ~S) > ~S]}} > [(P > ~R) v (~P > ~P)]");
         let out = optimal_prove(&[], &goal, &OptimalConfig::default());
         match out {
             OptimalOutcome::Proved { proof, .. } => assert_eq!(proof.line_count, 5),
             _ => panic!("must find the vacuous-disjunct shortcut"),
+        }
+    }
+
+    #[test]
+    fn not_proved_when_semantically_unprovable() {
+        // Q does not semantically entail P (independent atoms) -- the semantic
+        // oracle rejects every node instantly, so this exercises exhaustive
+        // failure across every depth up to max_lines without ever touching the
+        // node cap, landing on NotProvedWithinBounds rather than Exhausted.
+        let premises = [f("Q")];
+        let goal = f("P");
+        match optimal_prove(&premises, &goal, &OptimalConfig::default()) {
+            OptimalOutcome::NotProvedWithinBounds => {}
+            other => panic!("Q must not prove P: expected NotProvedWithinBounds, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn not_proved_when_bounds_too_tight_for_a_real_proof() {
+        // S is genuinely provable (P, P>Q, Q>R, R>S needs 3 MPs), but max_lines=2
+        // isn't enough -- this must exhaustively confirm no <=2-line proof exists
+        // and report NotProvedWithinBounds, not silently claim unprovability via
+        // the semantic oracle (S IS semantically entailed here, so the oracle
+        // never fires; this is purely a budget shortfall).
+        let premises = [f("P"), f("P > Q"), f("Q > R"), f("R > S")];
+        let goal = f("S");
+        let cfg = OptimalConfig { max_lines: 2, ..OptimalConfig::default() };
+        match optimal_prove(&premises, &goal, &cfg) {
+            OptimalOutcome::NotProvedWithinBounds => {}
+            other => panic!("S needs 3 lines, max_lines=2 must not find it: got {:?}", other),
         }
     }
 
@@ -815,6 +858,80 @@ mod tests {
             OptimalOutcome::NotProvedWithinBounds => panic!(
                 "R9 is provable (greedy found an 11-line proof) — NotProvedWithinBounds would mean exhaustive search wrongly concluded no proof exists, which is a real bug, not an honest exhaustion"
             ),
+        }
+    }
+
+    #[test]
+    fn conj_goal_proves_at_known_minimal_length() {
+        // Not a witness for the try_conj budget-split fix (round 2 ruling,
+        // 2026-08-15: accepted without one -- the sweep is provably at least as
+        // complete as the old single-point search, since it's a strict superset
+        // of what that search tried; that argument plus the green suite were
+        // judged sufficient, and constructing a reliable old-vs-new discrepancy
+        // witness by hand turned out to be impractical -- `search`'s actual
+        // step-by-step behavior is context-dependent in ways that made multiple
+        // careful attempts give different results for what looked like an
+        // identical construction). This test exists purely to keep the Conj path
+        // itself exercised at a known-correct minimal length: Q needs exactly 1
+        // line (MP from P, P>Q), R is already a premise (0 lines), so the
+        // minimal Conj proof of Q.R is exactly 2 lines (Q, then Conj).
+        let premises = [f("P"), f("P > Q"), f("R")];
+        let goal = f("Q . R");
+        let out = optimal_prove(&premises, &goal, &OptimalConfig::default());
+        match out {
+            OptimalOutcome::Proved { proof, minimal_proven } => {
+                assert_eq!(proof.line_count, 2);
+                assert!(minimal_proven);
+            }
+            _ => panic!("must prove Q . R in 2 lines (MP, Conj)"),
+        }
+    }
+
+    #[test]
+    fn round_whole_dn_wrap_needed_for_minimal_proof() {
+        // Witness (2026-08-15 ruling, round 2) that excluding whole-formula
+        // DoubleNegation/Tautology-expand was unsound. The minimal 3-line route:
+        //   1. P.Q -> ~~(P.Q)          [DN, whole-formula wrap of the ENTIRE
+        //                                first premise, not a subformula of it]
+        //   2. ~~(P.Q) -> ~(~P v ~Q)   [DeMorgan applied to the SUBFORMULA
+        //                                ~(P.Q) newly exposed inside ~~(P.Q) --
+        //                                NOT "wrap P.Q then unwrap it back": the
+        //                                overall formula becomes a genuinely
+        //                                different, useful fact]
+        //   3. MP with premise 2 (~(~P v ~Q) > C) and line 2 -> C
+        // Without the whole-formula wrap, the best route is 4 lines: DN-expand P
+        // and Q SEPARATELY as subformulas of P.Q (~P v ~Q needs both, so this
+        // still needs the DeMorgan direction some other way), or equivalently a
+        // backward-DeMorgan expansion of the goal-adjacent form plus MP -- one
+        // line longer than the true minimum. A whole-formula-excluding
+        // implementation can therefore find and CERTIFY a 4-line proof as
+        // minimal, which is false.
+        //
+        // At the default cap (equiv_moves_per_state: 64), minimal_proven is
+        // false: truncation genuinely occurs during the exhaustive depth-2
+        // verification (not just on the found depth), same ruled-accepted cap
+        // mechanism as R10/R11 (2026-08-15) -- T12 owns the dial, so only
+        // line_count is asserted here at the default cap. The second run below,
+        // at a raised cap, is the actual check that the cap dial restores
+        // certification (ruled 2026-08-15, round 3).
+        let premises = [f("P . Q"), f("~(~P v ~Q) > C")];
+        let goal = f("C");
+        let out = optimal_prove(&premises, &goal, &OptimalConfig::default());
+        match out {
+            OptimalOutcome::Proved { proof, .. } => {
+                assert_eq!(proof.line_count, 3);
+            }
+            _ => panic!("must prove C in 3 lines via the whole-formula DN-wrap route"),
+        }
+
+        let raised_cap = OptimalConfig { equiv_moves_per_state: 128, ..OptimalConfig::default() };
+        let out2 = optimal_prove(&premises, &goal, &raised_cap);
+        match out2 {
+            OptimalOutcome::Proved { proof, minimal_proven } => {
+                assert_eq!(proof.line_count, 3);
+                assert!(minimal_proven, "cap=128 must restore certification on this small witness");
+            }
+            _ => panic!("must still prove C in 3 lines at the raised cap"),
         }
     }
 }
