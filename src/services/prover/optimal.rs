@@ -115,7 +115,13 @@ pub enum OptimalOutcome {
     /// the search can't swear it's the shortest possible.
     Proved { proof: FoundProof, minimal_proven: bool },
     /// Every depth up to `max_lines` was exhaustively searched; no proof exists
-    /// under this move set within bounds.
+    /// under this move set within bounds. This is NOT a certified exhaustive
+    /// result if the equiv-move cap (`equiv_moves_per_state`) truncated any
+    /// state's candidate list during the run (`ctx.truncated`) — a capped list
+    /// could have hidden the very rewrite a proof needed, so absence here isn't
+    /// proof of absence. Callers must treat this variant exactly like
+    /// `Exhausted` for certification purposes (the serve filter already maps
+    /// both to `OptimalUnknown`).
     NotProvedWithinBounds,
     /// The node cap was hit before the search reached a verdict — an honest
     /// "unknown," never fabricated into `NotProvedWithinBounds`.
@@ -540,9 +546,11 @@ fn memo_key(state: &[Formula], goal: &Formula) -> (Vec<Formula>, Formula) {
 /// gains from skipping doomed branches. A local, self-contained evaluator rather
 /// than `services::truth_table`'s u32 fast path — that path hardcodes bit
 /// patterns for exactly the atom names P/Q/R/S/T and silently mistreats any
-/// other atom as P, which would be a real correctness hazard here. Formulas in
-/// this domain never approach 6 atoms, but a slow, always-correct fallback
-/// covers that case rather than risking a wrong answer.
+/// other atom as P, which would be a real correctness hazard here. Harder
+/// generator tiers routinely exceed 6 atoms (see `cheese.rs`'s module docs),
+/// so the `n > 6` slow path below is correct but not free: it pays a full
+/// `2^n`-per-node cost rather than this sweep's bit-parallel one, a known
+/// constant-factor cliff for tournament sampling at 7+ atoms.
 fn semantically_entailed(
     state: &[Formula],
     goal: &Formula,
