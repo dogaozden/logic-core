@@ -12,12 +12,18 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
 use crate::models::{Difficulty, Formula, Justification, Proof, Theorem};
-use crate::models::rules::{EquivalenceRule, InferenceRule};
+use crate::models::rules::{EquivalenceRule, InferenceRule, ProofTechnique};
 use crate::services::obfuscate_gen::build_atom_pool;
 use crate::services::verifier::ProofVerifier;
 
 /// Low weight given to equivalence steps vs. inference steps during growth.
 const EQUIVALENCE_STEP_WEIGHT: f64 = 0.15;
+
+/// Weight given to attempting a subproof-planting action (CP or IP) vs. a
+/// normal inference/equivalence step, whenever the current scope depth still
+/// has room under `spec.subproofs`. Applies uniformly at top level and when
+/// growing inside an already-open scope (nesting).
+const SUBPROOF_STEP_WEIGHT: f64 = 0.22;
 
 /// Configuration for a single forward-planted candidate.
 #[derive(Debug, Clone)]
@@ -58,6 +64,81 @@ pub enum PlantError {
     OutOfBand,
 }
 
+/// One scratch-space scope (subproof): a contiguous run of scratch positions
+/// `[start, end]`, `end` being the last inner line's position (the discharge
+/// line itself sits at `end + 1`, outside the scope). `end == None` while the
+/// scope is still open.
+#[derive(Debug, Clone, Copy)]
+struct ScratchScope {
+    start: usize,
+    end: Option<usize>,
+}
+
+impl ScratchScope {
+    fn contains(&self, pos: usize) -> bool {
+        match self.end {
+            Some(end) => pos >= self.start && pos <= end,
+            None => pos >= self.start,
+        }
+    }
+}
+
+/// Local mirror of `ScopeManager`'s accessibility rule, tracked directly over
+/// scratch positions during growth (before any real `Proof`/`ScopeManager`
+/// exists). Unlike the engine's `ScopeManager`, this supports `truncate_to`,
+/// so a failed subproof attempt can roll back cleanly — including forgetting
+/// scopes that were opened *and* closed during the abandoned attempt.
+///
+/// The final rebuilt `Proof`'s own `ScopeManager` is what the verifier
+/// actually checks against (built via `open_subproof`/`close_subproof`
+/// replay in `rebuild_proof`); this struct only needs to be accurate enough
+/// that growth never proposes a citation the replayed proof would reject.
+#[derive(Debug, Clone, Default)]
+struct ScratchScopes {
+    scopes: Vec<ScratchScope>,
+}
+
+impl ScratchScopes {
+    fn open(&mut self, start: usize) {
+        self.scopes.push(ScratchScope { start, end: None });
+    }
+
+    /// Close the innermost open scope.
+    fn close(&mut self, end: usize) {
+        if let Some(scope) = self.scopes.iter_mut().rev().find(|s| s.end.is_none()) {
+            scope.end = Some(end);
+        }
+    }
+
+    /// Number of currently-open scopes.
+    fn depth(&self) -> usize {
+        self.scopes.iter().filter(|s| s.end.is_none()).count()
+    }
+
+    /// Number of scopes (open or closed) containing `pos` — matches
+    /// `ScopeManager::depth_at_line`.
+    fn depth_at(&self, pos: usize) -> usize {
+        self.scopes.iter().filter(|s| s.contains(pos)).count()
+    }
+
+    /// Mirrors `ScopeManager::is_accessible`: can a new line about to be
+    /// added at position `from` cite the line at `to`? `to` must be earlier,
+    /// and every scope containing `to` must also contain `from` (i.e. `to`
+    /// is not sealed inside a scope that closed before `from`).
+    fn is_accessible(&self, from: usize, to: usize) -> bool {
+        if to >= from {
+            return false;
+        }
+        self.scopes.iter().all(|s| !s.contains(to) || s.contains(from))
+    }
+
+    /// Forget every scope (open or closed) opened at or after `pos` —
+    /// used to roll back a failed subproof attempt to a prior checkpoint.
+    fn truncate_to(&mut self, pos: usize) {
+        self.scopes.retain(|s| s.start <= pos);
+    }
+}
+
 /// Build a proof forward (premises → rules → conclusion) and extract the
 /// theorem whose witness proof is exactly the resulting derivation's
 /// dependency cone.
@@ -80,31 +161,45 @@ pub fn plant(spec: &PlantSpec, seed: u64) -> Result<PlantedCandidate, PlantError
         .collect();
     // consumed[i] = how many times scratch line (i+1) has been cited so far.
     let mut consumed: Vec<usize> = vec![0; n_premises];
+    // Scope/depth tracking for scratch positions (Task 4). Stays empty and
+    // inert when `spec.subproofs == 0`, in which case every helper below
+    // that consults it degenerates to Task 3's original flat behavior.
+    let mut scopes = ScratchScopes::default();
 
-    // Step 3: grow the derivation until the band is plausibly reachable.
-    let derived_target = spec.par_max.saturating_mul(2).max(8);
+    // Step 3: grow the derivation until the band is plausibly reachable. A
+    // single subproof action already contributes several lines at once (an
+    // assumption, 2+ inner steps, and a discharge, all atomically kept or
+    // dropped together at cone time), so with subproofs enabled the target
+    // is trimmed to stay near `par_max` instead of doubling it — otherwise
+    // growth keeps piling on top-level lines around an already-hefty
+    // subproof until the largest cone routinely overshoots the band. The
+    // `spec.subproofs == 0` path is untouched (byte-identical to Task 3).
+    let derived_target = if spec.subproofs >= 1 {
+        spec.par_max.saturating_add(3).max(8)
+    } else {
+        spec.par_max.saturating_mul(2).max(8)
+    };
     let max_attempts = (derived_target * 20).max(120);
     let mut derived_count = 0usize;
     let mut attempts = 0usize;
     while derived_count < derived_target && attempts < max_attempts {
         attempts += 1;
-        let grew = if rng.gen::<f64>() < EQUIVALENCE_STEP_WEIGHT {
-            try_equivalence_step(&mut scratch, &mut consumed, &mut rng, spec)
-        } else {
-            try_inference_step(&mut scratch, &mut consumed, &mut rng, spec, &atoms)
-        };
-        if grew {
-            derived_count += 1;
-        }
+        derived_count += grow_one_step(&mut scratch, &mut consumed, &mut scopes, &mut rng, spec, &atoms);
     }
 
     if derived_count == 0 {
         return Err(PlantError::Stuck);
     }
 
-    // Step 4: pick the conclusion = derived line with the largest dependency cone.
+    // Step 4: pick the conclusion = derived line with the largest dependency
+    // cone, restricted to positions that sit at depth 0 (a theorem's
+    // conclusion can never be an assumption or an inner/nested subproof line
+    // — only a plain top-level step or a first-level subproof's discharge).
     let mut best: Option<(usize, Vec<usize>, usize)> = None; // (line, cone, derived_in_cone)
     for pos in (n_premises + 1)..=scratch.len() {
+        if scopes.depth_at(pos) != 0 {
+            continue;
+        }
         let cone = compute_cone(&scratch, pos);
         let derived_in_cone = cone.iter().filter(|&&i| i > n_premises).count();
         let is_better = match &best {
@@ -201,9 +296,22 @@ fn line_weight(pos: usize, total: usize, consumed: &[usize]) -> f64 {
     0.1 + recency * freshness
 }
 
-fn weighted_pick_line(total: usize, consumed: &[usize], rng: &mut StdRng) -> usize {
-    let weights: Vec<f64> = (1..=total).map(|pos| line_weight(pos, total, consumed)).collect();
-    weighted_pick_index(&weights, rng) + 1
+/// Weighted-pick one position out of an explicit candidate set (as opposed
+/// to the full `1..=total` range), so callers can restrict the pool to
+/// scope-accessible positions. `total` remains the full scratch length, so
+/// recency weighting (`line_weight`) still scores against the true frontier.
+fn weighted_pick_line(positions: &[usize], total: usize, consumed: &[usize], rng: &mut StdRng) -> usize {
+    let weights: Vec<f64> = positions.iter().map(|&pos| line_weight(pos, total, consumed)).collect();
+    positions[weighted_pick_index(&weights, rng)]
+}
+
+/// Scratch positions `1..=n` that a new line at position `n + 1` may cite,
+/// per the same scope-accessibility rule the verifier enforces. With no open
+/// or closed scopes (`spec.subproofs == 0`), every position `1..=n` is
+/// accessible — an exact, behavior-preserving generalization of Task 3's
+/// original unrestricted `1..=n`.
+fn accessible_positions(scopes: &ScratchScopes, n: usize) -> Vec<usize> {
+    (1..=n).filter(|&p| scopes.is_accessible(n + 1, p)).collect()
 }
 
 /// Pick an index into `weights` proportional to weight; returns the last
@@ -270,9 +378,14 @@ fn combo_weight(combo: &[usize], total: usize, consumed: &[usize]) -> f64 {
 /// applicable operand tuples from the current scratch lines, and (weighted
 /// toward recent, not-yet-consumed operands) commit one non-duplicate,
 /// in-length-bound conclusion.
+///
+/// Operands are drawn only from scope-accessible positions (`eligible`), so
+/// this same function works unchanged for top-level growth, growth inside an
+/// open subproof, and growth after a sibling subproof has already closed.
 fn try_inference_step(
     scratch: &mut Vec<(Formula, Justification)>,
     consumed: &mut Vec<usize>,
+    scopes: &ScratchScopes,
     rng: &mut StdRng,
     spec: &PlantSpec,
     atoms: &[String],
@@ -280,14 +393,15 @@ fn try_inference_step(
     let rule = weighted_pick_rule(rng);
     let k = rule.premise_count();
     let n = scratch.len();
-    if k > n {
+    let eligible = accessible_positions(scopes, n);
+    if k > eligible.len() {
         return false;
     }
 
     let mut candidates: Vec<Candidate> = Vec::new();
 
     if rule == InferenceRule::Addition {
-        for pos in 1..=n {
+        for &pos in &eligible {
             let adjunct = sample_literal(rng, atoms);
             let operand = &scratch[pos - 1].0;
             for concl in rule.all_conclusions(&[operand], Some(&adjunct)) {
@@ -297,7 +411,8 @@ fn try_inference_step(
             }
         }
     } else {
-        for combo in combinations(n, k) {
+        for combo_idx in combinations(eligible.len(), k) {
+            let combo: Vec<usize> = combo_idx.iter().map(|&i| eligible[i - 1]).collect();
             let premises: Vec<&Formula> = combo.iter().map(|&p| &scratch[p - 1].0).collect();
             for concl in rule.all_conclusions(&premises, None) {
                 if !is_duplicate(scratch, &concl) && within_len(&concl, spec) {
@@ -339,11 +454,16 @@ fn try_inference_step(
 fn try_equivalence_step(
     scratch: &mut Vec<(Formula, Justification)>,
     consumed: &mut Vec<usize>,
+    scopes: &ScratchScopes,
     rng: &mut StdRng,
     spec: &PlantSpec,
 ) -> bool {
     let n = scratch.len();
-    let line_pos = weighted_pick_line(n, consumed, rng);
+    let eligible = accessible_positions(scopes, n);
+    if eligible.is_empty() {
+        return false;
+    }
+    let line_pos = weighted_pick_line(&eligible, n, consumed, rng);
     let formula = scratch[line_pos - 1].0.clone();
 
     let subformulas = formula.subformulas();
@@ -371,9 +491,242 @@ fn try_equivalence_step(
     true
 }
 
+/// One growth attempt at the current scope depth: with room to open a new
+/// subproof under `spec.subproofs` (`ScratchScopes::depth() < spec.subproofs`
+/// covers every case — top level opening the first scope, and nesting a
+/// second one inside it, since `subproofs` is exactly the max allowed
+/// depth), maybe plant one (CP or IP); otherwise a normal weighted
+/// inference/equivalence step. Returns the number of scratch lines added.
+///
+/// Shared by the top-level growth loop in `plant` and by subproof inner
+/// growth (`grow_cp_subproof`/`grow_ip_subproof`), so growth after a
+/// subproof closes and growth inside one follow exactly the same rules —
+/// scope-accessibility is the only thing that tells them apart, via
+/// `ScratchScopes` threaded through to `try_inference_step`/`try_equivalence_step`.
+///
+/// For `spec.subproofs == 0`, `scopes.depth() < 0` is never true (usize), so
+/// the subproof branch's random roll is never even evaluated (short-circuit)
+/// — this degenerates to Task 3's exact original dispatch and rng-call
+/// sequence: one `rng.gen::<f64>()` per attempt, compared against
+/// `EQUIVALENCE_STEP_WEIGHT` exactly as before.
+fn grow_one_step(
+    scratch: &mut Vec<(Formula, Justification)>,
+    consumed: &mut Vec<usize>,
+    scopes: &mut ScratchScopes,
+    rng: &mut StdRng,
+    spec: &PlantSpec,
+    atoms: &[String],
+) -> usize {
+    if scopes.depth() < spec.subproofs as usize && rng.gen::<f64>() < SUBPROOF_STEP_WEIGHT {
+        try_subproof_step(scratch, consumed, scopes, rng, spec, atoms)
+    } else if rng.gen::<f64>() < EQUIVALENCE_STEP_WEIGHT {
+        usize::from(try_equivalence_step(scratch, consumed, scopes, rng, spec))
+    } else {
+        usize::from(try_inference_step(scratch, consumed, scopes, rng, spec, atoms))
+    }
+}
+
+/// Attempt to plant one subproof (CP or IP, chosen with equal probability)
+/// at the current scope depth. Returns the number of scratch lines added (0
+/// on failure, in which case `scratch`/`consumed`/`scopes` are restored to
+/// exactly their pre-call state — see `grow_cp_subproof`/`grow_ip_subproof`).
+fn try_subproof_step(
+    scratch: &mut Vec<(Formula, Justification)>,
+    consumed: &mut Vec<usize>,
+    scopes: &mut ScratchScopes,
+    rng: &mut StdRng,
+    spec: &PlantSpec,
+    atoms: &[String],
+) -> usize {
+    let before = scratch.len();
+    let ok = if rng.gen_bool(0.5) {
+        grow_cp_subproof(scratch, consumed, scopes, rng, spec, atoms)
+    } else {
+        grow_ip_subproof(scratch, consumed, scopes, rng, spec, atoms)
+    };
+    if ok {
+        scratch.len() - before
+    } else {
+        0
+    }
+}
+
+/// Snapshot of `scratch`/`consumed`, for rolling back a failed subproof
+/// attempt. Restoring `consumed` in full (not just truncating) matters:
+/// partially-successful inner growth may have incremented the consumed-count
+/// of *pre-existing* (outer) lines it cited as operands, and a plain
+/// truncate would leave that bias in place even though the lines that
+/// caused it are gone.
+struct GrowthCheckpoint {
+    scratch_len: usize,
+    consumed: Vec<usize>,
+}
+
+fn checkpoint(scratch: &[(Formula, Justification)], consumed: &[usize]) -> GrowthCheckpoint {
+    GrowthCheckpoint { scratch_len: scratch.len(), consumed: consumed.to_vec() }
+}
+
+fn restore(
+    cp: GrowthCheckpoint,
+    scratch: &mut Vec<(Formula, Justification)>,
+    consumed: &mut Vec<usize>,
+    scopes: &mut ScratchScopes,
+) {
+    scratch.truncate(cp.scratch_len);
+    *consumed = cp.consumed;
+    scopes.truncate_to(cp.scratch_len);
+}
+
+/// Plant a Conditional Proof subproof: assume `A`, grow 2–5 inner steps
+/// (which may cite outer lines and `A`, and — when nesting room remains — a
+/// subproof of their own), then discharge `A > X` where `X` is the last
+/// inner line's formula. Aborts (rolling back to exactly the pre-call state)
+/// if fewer than 2 inner steps can be grown within budget, or if the
+/// discharge formula is a duplicate or too long.
+fn grow_cp_subproof(
+    scratch: &mut Vec<(Formula, Justification)>,
+    consumed: &mut Vec<usize>,
+    scopes: &mut ScratchScopes,
+    rng: &mut StdRng,
+    spec: &PlantSpec,
+    atoms: &[String],
+) -> bool {
+    let assumption = sample_small_formula(rng, atoms);
+    if !within_len(&assumption, spec) {
+        return false;
+    }
+
+    let cp = checkpoint(scratch, consumed);
+    let assumption_pos = scratch.len() + 1;
+    scopes.open(assumption_pos);
+    scratch.push((assumption.clone(), Justification::Assumption { technique: ProofTechnique::ConditionalProof }));
+    consumed.push(0);
+
+    let n_inner = rng.gen_range(2..=5);
+    let mut grown_inner = 0usize;
+    let budget = (n_inner * 15).max(40);
+    let mut inner_attempts = 0usize;
+    while grown_inner < n_inner && inner_attempts < budget {
+        inner_attempts += 1;
+        if grow_one_step(scratch, consumed, scopes, rng, spec, atoms) > 0 {
+            grown_inner += 1;
+        }
+    }
+
+    if grown_inner < 2 {
+        restore(cp, scratch, consumed, scopes);
+        return false;
+    }
+
+    let last_inner_pos = scratch.len();
+    let last_inner_formula = scratch[last_inner_pos - 1].0.clone();
+    let conclusion = Formula::Implies(Box::new(assumption), Box::new(last_inner_formula));
+
+    if is_duplicate(scratch, &conclusion) || !within_len(&conclusion, spec) {
+        restore(cp, scratch, consumed, scopes);
+        return false;
+    }
+
+    scopes.close(last_inner_pos);
+    consumed[assumption_pos - 1] += 1;
+    consumed[last_inner_pos - 1] += 1;
+    scratch.push((
+        conclusion,
+        Justification::SubproofConclusion {
+            technique: ProofTechnique::ConditionalProof,
+            subproof_start: assumption_pos,
+            subproof_end: last_inner_pos,
+        },
+    ));
+    consumed.push(0);
+    true
+}
+
+/// Plant an Indirect Proof subproof. Seeds the contradiction on an existing
+/// accessible outer line `Y` (the brief's "pick an outer line and construct
+/// its negation path"): the assumption is `~Y`, so `Y` (outer, accessible)
+/// and `~Y` (the assumption itself) are *already* a contradictory pair the
+/// moment the scope opens — an immediate `Contradiction` (NegE) citing
+/// `[seed_pos, assumption_pos]` is always available, regardless of whatever
+/// filler growth happens first. The discharge then yields `Y` back (IP
+/// removes the assumption's negation). Unlike CP, this can never fail once
+/// past the initial checks — there's nothing to roll back.
+fn grow_ip_subproof(
+    scratch: &mut Vec<(Formula, Justification)>,
+    consumed: &mut Vec<usize>,
+    scopes: &mut ScratchScopes,
+    rng: &mut StdRng,
+    spec: &PlantSpec,
+    atoms: &[String],
+) -> bool {
+    let n = scratch.len();
+    let eligible = accessible_positions(scopes, n);
+    if eligible.is_empty() {
+        return false;
+    }
+    let seed_pos = weighted_pick_line(&eligible, n, consumed, rng);
+    let seed_formula = scratch[seed_pos - 1].0.clone();
+    let assumption = Formula::Not(Box::new(seed_formula.clone()));
+    if !within_len(&assumption, spec) {
+        return false;
+    }
+
+    let assumption_pos = scratch.len() + 1;
+    scopes.open(assumption_pos);
+    scratch.push((assumption, Justification::Assumption { technique: ProofTechnique::IndirectProof }));
+    consumed.push(0);
+
+    // Optional filler growth before closing the contradiction (0..=3 steps);
+    // purely cosmetic variety — the contradiction below doesn't depend on it.
+    let n_extra = rng.gen_range(0..=3);
+    let mut grown = 0usize;
+    let budget = (n_extra * 15).max(20);
+    let mut attempts = 0usize;
+    while grown < n_extra && attempts < budget {
+        attempts += 1;
+        if grow_one_step(scratch, consumed, scopes, rng, spec, atoms) > 0 {
+            grown += 1;
+        }
+    }
+
+    consumed[seed_pos - 1] += 1;
+    consumed[assumption_pos - 1] += 1;
+    scratch.push((
+        Formula::Contradiction,
+        Justification::Inference { rule: InferenceRule::Contradiction, lines: vec![seed_pos, assumption_pos] },
+    ));
+    consumed.push(0);
+    let contradiction_pos = scratch.len();
+
+    scopes.close(contradiction_pos);
+    consumed[assumption_pos - 1] += 1;
+    consumed[contradiction_pos - 1] += 1;
+    scratch.push((
+        seed_formula,
+        Justification::SubproofConclusion {
+            technique: ProofTechnique::IndirectProof,
+            subproof_start: assumption_pos,
+            subproof_end: contradiction_pos,
+        },
+    ));
+    consumed.push(0);
+
+    true
+}
+
 /// Transitive closure of cited lines starting at `target`, including `target`
 /// itself. Returned sorted ascending (also a valid rebuild/topological order,
 /// since every citation points strictly backward in scratch position).
+///
+/// Scope-atomic: whenever the walk reaches a `SubproofConclusion` (discharge)
+/// line, the *entire* closed scope `[subproof_start, subproof_end]` is pulled
+/// in, not just the two endpoints `referenced_lines()` names. This is safe
+/// (never pulls in unrelated content) because scope ranges are always
+/// contiguous blocks of scratch positions populated by exactly one subproof
+/// action — see `try_subproof_step`. It's also necessary: growth never lets
+/// a citation reach *into* a closed scope except via its own discharge line
+/// (`ScratchScopes::is_accessible`), so an assumption or inner line can only
+/// ever enter the cone this way, and always as a complete, closeable unit.
 fn compute_cone(scratch: &[(Formula, Justification)], target: usize) -> Vec<usize> {
     let mut seen = vec![false; scratch.len() + 1];
     let mut stack = vec![target];
@@ -385,6 +738,14 @@ fn compute_cone(scratch: &[(Formula, Justification)], target: usize) -> Vec<usiz
             if !seen[r] {
                 seen[r] = true;
                 stack.push(r);
+            }
+        }
+        if let Justification::SubproofConclusion { subproof_start, subproof_end, .. } = &scratch[idx - 1].1 {
+            for p in *subproof_start..=*subproof_end {
+                if !seen[p] {
+                    seen[p] = true;
+                    stack.push(p);
+                }
             }
         }
     }
@@ -411,8 +772,24 @@ fn remap_justification(j: &Justification, remap: &[Option<usize>]) -> Justificat
 
 /// Rebuild a fresh `Proof` containing only the cone: `Theorem` premises are
 /// the cone's premise leaves (a possibly-strict subset of the sampled
-/// premises), and each cone step is re-added in original order with
+/// premises), and each cone step is replayed in original (scope) order with
 /// citations remapped to the new line numbers.
+///
+/// Replay, not line-copying: `Assumption` lines go through
+/// `open_subproof` and `SubproofConclusion` lines go through
+/// `close_subproof`, so the rebuilt `Proof`'s own `ScopeManager` is built up
+/// exactly as a human writing the proof top-to-bottom would build it — depth,
+/// scope ids, and (via `close_subproof`'s internal bookkeeping) the discharge
+/// line's own `subproof_start`/`subproof_end` are all derived fresh from
+/// *this* replay, not copied from scratch-space numbering. Everything else
+/// (`Inference`/`Equivalence`) still goes through `add_line` with citations
+/// remapped via `remap_justification`, exactly as in Task 3.
+///
+/// This only produces well-formed scope nesting because cone membership is
+/// scope-atomic (see `compute_cone`): a scope's assumption and discharge are
+/// always both in `cone_derived_positions` or both absent, so every
+/// `open_subproof` replayed here has a matching `close_subproof` later in
+/// the same loop, in the same relative order.
 fn rebuild_proof(
     scratch: &[(Formula, Justification)],
     cone: &[usize],
@@ -442,8 +819,18 @@ fn rebuild_proof(
 
     for &old_pos in &cone_derived_positions {
         let (formula, justification) = &scratch[old_pos - 1];
-        let remapped = remap_justification(justification, &remap);
-        proof.add_line(formula.clone(), remapped);
+        match justification {
+            Justification::Assumption { technique } => {
+                proof.open_subproof(formula.clone(), *technique);
+            }
+            Justification::SubproofConclusion { technique, .. } => {
+                proof.close_subproof(formula.clone(), *technique);
+            }
+            _ => {
+                let remapped = remap_justification(justification, &remap);
+                proof.add_line(formula.clone(), remapped);
+            }
+        }
     }
 
     (theorem, proof)
