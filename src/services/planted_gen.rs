@@ -13,7 +13,9 @@ use rand::{Rng, SeedableRng};
 
 use crate::models::{Difficulty, Formula, Justification, Proof, Theorem};
 use crate::models::rules::{EquivalenceRule, InferenceRule, ProofTechnique};
+use crate::services::cheese::cheese_check;
 use crate::services::obfuscate_gen::build_atom_pool;
+use crate::services::prover::{greedy_prove, optimal_prove, OptimalConfig, OptimalOutcome};
 use crate::services::verifier::ProofVerifier;
 
 /// Low weight given to equivalence steps vs. inference steps during growth.
@@ -1098,4 +1100,122 @@ fn apply_costume_pass(theorem: &Theorem, proof: &Proof, spec: &PlantSpec, rng: &
     );
 
     (new_theorem, new_proof)
+}
+
+// ─── Golf gate pipeline (Task 6) ────────────────────────────────────────────
+//
+// Reject-filter deciding which planted candidates are benchmark-worthy:
+// cheap syntactic checks first, expensive prover calls last, first failure
+// wins. Consumes the cheese/greedy/lawyer services already in this crate.
+// Notarization (replaying the proof through the validator) is deliberately
+// NOT here — it's propbench's job, since the replay format lives there.
+
+/// Configuration for the golf-worthiness gate pipeline (`golf_gate`).
+#[derive(Debug, Clone)]
+pub struct GateConfig {
+    /// `ascii_string_bracketed` char cap for every premise and the
+    /// conclusion (default 90, matching `PlantSpec::max_formula_len`).
+    pub max_formula_len: usize,
+    /// Max equivalence-rewrite BFS depth for the disguised-identity cheese
+    /// check (default 3, matching `ServeConfig::default`).
+    pub cheese_max_distance: usize,
+    /// Line budget for the greedy ("philosopher") gate (default 40).
+    pub greedy_max_lines: usize,
+    /// Every candidate must survive a lawyer search at this budget (default
+    /// `OptimalConfig::default()`).
+    pub probe: OptimalConfig,
+    /// Optional stricter lawyer budget for finalists only. `None` (the
+    /// default) skips this stage entirely — probe-only gating. The
+    /// canonical freeze config (`max_lines: c.par, max_nodes: 5_000_000,
+    /// equiv_moves_per_state: 256`) is the caller's to construct; this
+    /// stage just runs whatever it's handed.
+    pub freeze: Option<OptimalConfig>,
+}
+
+impl Default for GateConfig {
+    fn default() -> Self {
+        GateConfig {
+            max_formula_len: 90,
+            cheese_max_distance: 3,
+            greedy_max_lines: 40,
+            probe: OptimalConfig::default(),
+            freeze: None,
+        }
+    }
+}
+
+/// Why `golf_gate` rejected a candidate, cheapest check first — the
+/// pipeline stops at the first failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateReject {
+    /// A premise or the conclusion exceeds `cfg.max_formula_len`.
+    TooBig,
+    /// Vetoed by `cheese_check` (tautologous disjunct, subformula decoy, or
+    /// disguised identity); the string names which one and its detail.
+    Cheese(String),
+    /// The greedy philosopher found a proof unaided — too easy.
+    GreedyProvable { lines: usize },
+    /// The bounded-optimal lawyer cracked it at probe (default) budgets.
+    LawyerProbeCracked { lines: usize },
+    /// The bounded-optimal lawyer cracked it at freeze (finalist) budgets.
+    LawyerFreezeCracked { lines: usize },
+}
+
+/// Reject-filter deciding whether `c` is benchmark-worthy: size → cheese →
+/// greedy → lawyer probe → optional lawyer freeze, cheapest first, first
+/// failure wins. `Ok(())` means `c` survived every configured stage.
+pub fn golf_gate(c: &PlantedCandidate, cfg: &GateConfig) -> Result<(), GateReject> {
+    // 1. Size: pure string length, cheapest possible check.
+    let too_big = c
+        .theorem
+        .premises
+        .iter()
+        .chain(std::iter::once(&c.theorem.conclusion))
+        .any(|f| f.ascii_string_bracketed().chars().count() > cfg.max_formula_len);
+    if too_big {
+        return Err(GateReject::TooBig);
+    }
+
+    // 2. Cheese: cheap syntactic/truth-table checks. Field precedence
+    // mirrors `serve_filter::analyze_for_serving`'s ordering of the same
+    // three `CheeseReport` fields.
+    let cheese = cheese_check(&c.theorem.premises, &c.theorem.conclusion, cfg.cheese_max_distance);
+    if let Some(disjunct) = &cheese.tautologous_disjunct {
+        return Err(GateReject::Cheese(format!(
+            "tautologous disjunct: {}",
+            disjunct.ascii_string_bracketed()
+        )));
+    }
+    if let Some(decoy) = &cheese.subformula_decoy {
+        return Err(GateReject::Cheese(format!("subformula decoy: {}", decoy.ascii_string_bracketed())));
+    }
+    if let Some(distance) = cheese.identity_rewrite_distance {
+        return Err(GateReject::Cheese(format!("disguised identity at distance {distance}")));
+    }
+
+    // 3. Greedy: the philosopher must fail to prove it unaided.
+    let greedy = greedy_prove(&c.theorem.premises, &c.theorem.conclusion, cfg.greedy_max_lines);
+    if let Some(proof) = greedy.proof {
+        return Err(GateReject::GreedyProvable { lines: proof.line_count });
+    }
+
+    // 4. Lawyer probe: default-budget bounded-optimal search must not crack
+    // it. `Proved` in ANY form (certified minimal or not) is a reject;
+    // `NotProvedWithinBounds`/`Exhausted` both pass.
+    if let OptimalOutcome::Proved { proof, .. } =
+        optimal_prove(&c.theorem.premises, &c.theorem.conclusion, &cfg.probe)
+    {
+        return Err(GateReject::LawyerProbeCracked { lines: proof.line_count });
+    }
+
+    // 5. Lawyer freeze: finalists only, caller-configured budget.
+    if let Some(freeze_cfg) = &cfg.freeze {
+        if let OptimalOutcome::Proved { proof, .. } =
+            optimal_prove(&c.theorem.premises, &c.theorem.conclusion, freeze_cfg)
+        {
+            return Err(GateReject::LawyerFreezeCracked { lines: proof.line_count });
+        }
+    }
+
+    Ok(())
 }
