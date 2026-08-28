@@ -46,7 +46,8 @@ pub struct PlantSpec {
 /// valid and complete by construction.
 #[derive(Debug, Clone)]
 pub struct PlantedCandidate {
-    /// Premises = cone leaves, conclusion = cone root.
+    /// Premises = cone leaves, conclusion = cone root — or, when
+    /// `obfuscation_passes > 0`, their costumed forms (see `apply_costume_pass`).
     pub theorem: Theorem,
     /// The planted proof, natively valid & complete.
     pub proof: Proof,
@@ -231,8 +232,31 @@ pub fn plant(spec: &PlantSpec, seed: u64) -> Result<PlantedCandidate, PlantError
         );
     }
 
+    // Step 7: costume pass (Task 5). Layers a prologue (un-rewriting each
+    // obfuscated premise) and epilogue (rewriting the conclusion forward) of
+    // structural equivalence steps around the same body — see
+    // `apply_costume_pass`. Inert at `obfuscation_passes == 0`: `theorem`
+    // and `proof` pass through untouched, byte-identical to Tasks 3-4.
+    let (theorem, proof) = if spec.obfuscation_passes > 0 {
+        let (costumed_theorem, mut costumed_proof) = apply_costume_pass(&theorem, &proof, spec, &mut rng);
+        ProofVerifier::verify_proof(&mut costumed_proof);
+        let all_valid = costumed_proof.lines.iter().all(|l| l.is_valid);
+        let complete = costumed_proof.check_complete();
+        if !all_valid || !complete {
+            panic!(
+                "plant: costumed proof failed verification for seed {seed} (spec={:?}); all_valid={all_valid} complete={complete}",
+                spec
+            );
+        }
+        (costumed_theorem, costumed_proof)
+    } else {
+        (theorem, proof)
+    };
+
     let par = proof.lines.len() - theorem.premises.len();
-    debug_assert_eq!(par, par_from_cone, "cone-derived par must match rebuilt proof par");
+    if spec.obfuscation_passes == 0 {
+        debug_assert_eq!(par, par_from_cone, "cone-derived par must match rebuilt proof par");
+    }
 
     Ok(PlantedCandidate { theorem, proof, par, seed })
 }
@@ -489,6 +513,124 @@ fn try_equivalence_step(
     scratch.push((result, Justification::Equivalence { rule, line: line_pos }));
     consumed.push(0);
     true
+}
+
+/// One structural equivalence rewrite recorded while obfuscating a single
+/// theorem-slot formula (a premise or the conclusion): replace-all `before`
+/// -> `after` via `rule`. Kept private — nothing outside this file needs to
+/// see individual steps, only the obfuscated formula `obfuscate_with_trace`
+/// returns and the prologue/epilogue proof lines built from the trace.
+///
+/// Stores the rewritten subformula pair rather than a path into the parent
+/// formula (Task 5's binding ruling): `ProofVerifier::verify_equivalence`
+/// only accepts structural replace-all rewrites (`check_subformula_equivalence`
+/// picks a subformula and replaces *every* occurrence — see verifier.rs), so
+/// a step's meaning is fully captured by the (before, after) pair it
+/// replaces everywhere, not by a single positional site.
+#[derive(Debug, Clone)]
+struct RewriteStep {
+    rule: EquivalenceRule,
+    before: Formula,
+    after: Formula,
+}
+
+/// Enumerate every admissible one-step structural rewrite of `current`: for
+/// each subformula and each rule, each of the rule's equivalent forms of
+/// that subformula is a candidate, paired with the whole-formula result of
+/// replacing every occurrence (`EquivalenceRule::replace_subformula` — the
+/// same replace-all semantics the verifier checks).
+///
+/// A candidate is admissible only when all of:
+/// - it's a genuine change (`form != sub`; a same-formula "rewrite" would be
+///   a no-op step that wastes a par line for nothing),
+/// - the result fits `spec.max_formula_len`,
+/// - the result doesn't collide with `avoid` (another theorem slot's
+///   formula — obfuscating a premise into equaling another premise or the
+///   conclusion is degenerate),
+/// - the rule accepts the reverse direction too (`sub` is itself one of
+///   `rule.equivalent_forms(&form)`) — true of every rule variant on every
+///   formula sampled in manual testing, but checked directly rather than
+///   assumed, since it's a fact about hand-written per-rule code, and
+/// - it round-trips: replacing `after` back to `before` (replace-all) on the
+///   result reproduces `current` exactly.
+///
+/// Both of the last two conditions are needed, and neither implies the
+/// other: the reverse-rule check is about whether `rule.equivalent_forms`
+/// *recognizes* `before` as a valid image of `after`; the round-trip check
+/// is a separate, purely structural fact about `replace_subformula`, and
+/// catches the case where `after` already occurred somewhere in `current`
+/// outside the rewrite site — replacing every occurrence of `after` back to
+/// `before` would then also overwrite that unrelated occurrence, landing on
+/// some other formula instead of exactly `current`. Together they guarantee
+/// `ProofVerifier::verify_equivalence`'s `check_subformula_equivalence`
+/// (which brute-forces over `source.subformulas()` and
+/// `rule.equivalent_forms`) finds this exact (after, before) pair as a
+/// witness — which is what makes the prologue (un-rewriting a premise back
+/// to its original form) and epilogue (rewriting the conclusion forward)
+/// verify.
+fn admissible_rewrite_steps(
+    current: &Formula,
+    spec: &PlantSpec,
+    avoid: &[Formula],
+) -> Vec<(RewriteStep, Formula)> {
+    let mut out = Vec::new();
+    let rules = EquivalenceRule::all();
+    for sub in current.subformulas() {
+        for &rule in &rules {
+            for form in rule.equivalent_forms(&sub) {
+                if form == sub {
+                    continue;
+                }
+                let next = EquivalenceRule::replace_subformula(current, &sub, &form);
+                if !within_len(&next, spec) || avoid.contains(&next) {
+                    continue;
+                }
+                if !rule.equivalent_forms(&form).contains(&sub) {
+                    continue;
+                }
+                let back = EquivalenceRule::replace_subformula(&next, &form, &sub);
+                if back != *current {
+                    continue;
+                }
+                out.push((RewriteStep { rule, before: sub.clone(), after: form }, next));
+            }
+        }
+    }
+    out
+}
+
+/// Costume a single formula with `1..=passes` chained structural rewrites,
+/// each admissible per `admissible_rewrite_steps` (uniformly chosen among
+/// that step's candidates) and applied to the *result* of the previous one.
+/// A sampled pass that finds no admissible candidate for the formula's
+/// current stage contributes nothing and is silently skipped — so the
+/// returned trace can be shorter than the sampled pass count, empty in the
+/// limit (never an error: an un-costumed formula is a valid, if
+/// unobfuscated, outcome — see the "empty trace" case in `apply_costume_pass`).
+///
+/// Requires `passes >= 1` (guaranteed by `apply_costume_pass`'s caller,
+/// which only invokes this path when `spec.obfuscation_passes > 0`).
+fn obfuscate_with_trace(
+    f: &Formula,
+    passes: u8,
+    rng: &mut StdRng,
+    spec: &PlantSpec,
+    avoid: &[Formula],
+) -> (Formula, Vec<RewriteStep>) {
+    let n_passes = rng.gen_range(1..=passes);
+    let mut current = f.clone();
+    let mut trace = Vec::new();
+    for _ in 0..n_passes {
+        let candidates = admissible_rewrite_steps(&current, spec, avoid);
+        if candidates.is_empty() {
+            continue;
+        }
+        let chosen = rng.gen_range(0..candidates.len());
+        let (step, next) = candidates.into_iter().nth(chosen).expect("chosen index is in bounds");
+        trace.push(step);
+        current = next;
+    }
+    (current, trace)
 }
 
 /// One growth attempt at the current scope depth: with room to open a new
@@ -834,4 +976,126 @@ fn rebuild_proof(
     }
 
     (theorem, proof)
+}
+
+/// Layer a costume pass on top of an already valid & complete `(theorem,
+/// proof)` pair (Task 5): obfuscate each premise and the conclusion
+/// independently, then rebuild the proof a second time with the obfuscated
+/// premises/conclusion as the new theorem, replaying the original body
+/// between a prologue (un-rewriting each obfuscated premise back to the
+/// form the body actually cites) and an epilogue (rewriting the body's
+/// conclusion forward to the obfuscated conclusion).
+///
+/// Only called when `spec.obfuscation_passes > 0`; `proof` must already be
+/// natively valid and complete (the caller verifies this before calling).
+fn apply_costume_pass(theorem: &Theorem, proof: &Proof, spec: &PlantSpec, rng: &mut StdRng) -> (Theorem, Proof) {
+    let n_premises = theorem.premises.len();
+
+    // Costume premises left to right. Each one's avoid-list is every OTHER
+    // slot's formula as currently known: already-costumed premises
+    // contribute their final obfuscated form, not-yet-processed premises
+    // and the conclusion contribute their original form (obfuscating a
+    // premise into colliding with any of these is degenerate — see
+    // `admissible_rewrite_steps`).
+    let mut final_premises: Vec<Formula> = Vec::with_capacity(n_premises);
+    let mut premise_traces: Vec<Vec<RewriteStep>> = Vec::with_capacity(n_premises);
+    for i in 0..n_premises {
+        let avoid: Vec<Formula> = (0..n_premises)
+            .filter(|&j| j != i)
+            .map(|j| final_premises.get(j).cloned().unwrap_or_else(|| theorem.premises[j].clone()))
+            .chain(std::iter::once(theorem.conclusion.clone()))
+            .collect();
+        let (p_prime, trace) =
+            obfuscate_with_trace(&theorem.premises[i], spec.obfuscation_passes, rng, spec, &avoid);
+        final_premises.push(p_prime);
+        premise_traces.push(trace);
+    }
+
+    // Conclusion, avoiding collision with every (now fully finalized) premise.
+    let (conclusion_prime, trace_c) =
+        obfuscate_with_trace(&theorem.conclusion, spec.obfuscation_passes, rng, spec, &final_premises);
+
+    let new_theorem = Theorem::new(
+        final_premises.clone(),
+        conclusion_prime.clone(),
+        theorem.difficulty,
+        theorem.theme.clone(),
+        theorem.name.clone(),
+    );
+    let mut new_proof = Proof::new(new_theorem.clone());
+
+    // Prologue: un-rewrite each obfuscated premise back to the form the
+    // body cites, one Equivalence line per trace step, applied in reverse
+    // (the last costume step undone first) and each citing the line the
+    // previous un-rewrite step just produced (the first cites the premise
+    // line itself). An empty trace (every sampled pass skipped) contributes
+    // no lines — the body's citations then point straight at the premise.
+    let mut premise_final_lines: Vec<usize> = Vec::with_capacity(n_premises);
+    for i in 0..n_premises {
+        let mut cur_formula = final_premises[i].clone();
+        let mut cur_line = i + 1;
+        for step in premise_traces[i].iter().rev() {
+            cur_formula = EquivalenceRule::replace_subformula(&cur_formula, &step.after, &step.before);
+            new_proof.add_line(cur_formula.clone(), Justification::Equivalence { rule: step.rule, line: cur_line });
+            cur_line = new_proof.lines.len();
+        }
+        debug_assert_eq!(
+            cur_formula, theorem.premises[i],
+            "prologue must un-rewrite premise {i} back to the exact formula the body was derived from"
+        );
+        premise_final_lines.push(cur_line);
+    }
+
+    // Body: replay the original proof's derived lines (everything after its
+    // premises) exactly as `rebuild_proof` does above — Assumption/
+    // SubproofConclusion lines go through open_subproof/close_subproof
+    // (which derive scope bookkeeping fresh from this replay, so nested
+    // subproofs' own citations never need remapping), everything else
+    // through add_line with citations remapped from old line numbers
+    // (premises shift to wherever their prologue landed; later derived
+    // lines shift by the prologue's total length).
+    let mut remap: Vec<Option<usize>> = vec![None; proof.lines.len() + 1];
+    for i in 1..=n_premises {
+        remap[i] = Some(premise_final_lines[i - 1]);
+    }
+    let body_start_new = new_proof.lines.len() + 1;
+    for (offset, old_pos) in ((n_premises + 1)..=proof.lines.len()).enumerate() {
+        remap[old_pos] = Some(body_start_new + offset);
+    }
+
+    for old_pos in (n_premises + 1)..=proof.lines.len() {
+        let line = &proof.lines[old_pos - 1];
+        match &line.justification {
+            Justification::Assumption { technique } => {
+                new_proof.open_subproof(line.formula.clone(), *technique);
+            }
+            Justification::SubproofConclusion { technique, .. } => {
+                new_proof.close_subproof(line.formula.clone(), *technique);
+            }
+            other => {
+                let remapped = remap_justification(other, &remap);
+                new_proof.add_line(line.formula.clone(), remapped);
+            }
+        }
+    }
+
+    // Epilogue: rewrite the body's conclusion forward to the obfuscated
+    // conclusion, one Equivalence line per trace step, each citing the
+    // previous epilogue line (the first cites the body's own conclusion
+    // line — always the original proof's last line, replayed above).
+    let body_conclusion_new_line =
+        remap[proof.lines.len()].expect("the body's last (conclusion) line must be in the remap");
+    let mut cur_formula = theorem.conclusion.clone();
+    let mut cur_line = body_conclusion_new_line;
+    for step in &trace_c {
+        cur_formula = EquivalenceRule::replace_subformula(&cur_formula, &step.before, &step.after);
+        new_proof.add_line(cur_formula.clone(), Justification::Equivalence { rule: step.rule, line: cur_line });
+        cur_line = new_proof.lines.len();
+    }
+    debug_assert_eq!(
+        cur_formula, conclusion_prime,
+        "epilogue must rewrite the conclusion forward to the exact obfuscated conclusion"
+    );
+
+    (new_theorem, new_proof)
 }

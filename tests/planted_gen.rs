@@ -19,6 +19,12 @@ fn spec_with_subproofs(n: u8) -> PlantSpec {
     spec
 }
 
+fn spec_with_obfuscation(passes: u8) -> PlantSpec {
+    let mut spec = small_spec();
+    spec.obfuscation_passes = passes;
+    spec
+}
+
 #[test]
 fn plant_produces_valid_complete_proof_in_band() {
     let spec = small_spec();
@@ -229,4 +235,86 @@ fn plant_subproofs_2_reaches_nesting_depth_2() {
         found_depth_2,
         "no seed in 0..500 produced a nesting-depth-2 candidate under subproofs:2"
     );
+}
+
+/// (a) Costumed candidates still verify natively, are complete, and `par` is
+/// exactly `proof.lines.len() - theorem.premises.len()` — the costume pass
+/// adds prologue/epilogue lines on top of the (already band-checked) cone,
+/// so unlike the plain-growth tests above we do NOT assert `par` stays
+/// within `[par_min, par_max]`; only that the accounting itself is exact.
+#[test]
+fn plant_with_obfuscation_verifies_and_pars_exactly() {
+    let spec = spec_with_obfuscation(2);
+    let mut checked = 0;
+    for seed in 0..200u64 {
+        if let Ok(c) = plant(&spec, seed) {
+            checked += 1;
+            assert_eq!(
+                c.par,
+                c.proof.lines.len() - c.theorem.premises.len(),
+                "seed {seed}: par must equal total lines minus premises"
+            );
+            let mut p = c.proof.clone();
+            logic_core::services::ProofVerifier::verify_proof(&mut p);
+            assert!(
+                p.lines.iter().all(|l| l.is_valid),
+                "seed {seed}: costumed candidate failed native verification"
+            );
+            assert!(p.check_complete(), "seed {seed}: costumed candidate is not complete");
+        }
+    }
+    assert!(checked >= 20, "yield too low with obfuscation_passes:2: {checked}/200");
+}
+
+/// (b) The costume pass actually does something: for at least one seed, the
+/// theorem's conclusion produced with `obfuscation_passes: 2` differs from
+/// the conclusion produced by the un-obfuscated run of the same seed
+/// (`obfuscation_passes: 0`) — everything upstream of costuming (premises,
+/// growth, cone selection) is byte-identical between the two specs, so any
+/// difference is attributable to the costume pass.
+#[test]
+fn plant_with_obfuscation_changes_the_conclusion_for_at_least_one_seed() {
+    let costumed_spec = spec_with_obfuscation(2);
+    let plain_spec = spec_with_obfuscation(0);
+    let mut found = false;
+    for seed in 0..200u64 {
+        if let (Ok(costumed), Ok(plain)) = (plant(&costumed_spec, seed), plant(&plain_spec, seed)) {
+            if costumed.theorem.conclusion.ascii_string_bracketed()
+                != plain.theorem.conclusion.ascii_string_bracketed()
+            {
+                found = true;
+                break;
+            }
+        }
+    }
+    assert!(found, "no seed in 0..200 produced a costume-changed conclusion");
+}
+
+/// (c) Determinism holds through the costume pass too: same seed, same
+/// spec, byte-identical proof — including the new Equivalence
+/// (prologue/epilogue) lines' formulas, depths, and justification strings.
+#[test]
+fn plant_with_obfuscation_is_deterministic() {
+    let spec = spec_with_obfuscation(2);
+    let seed = (0..200u64)
+        .find(|&seed| plant(&spec, seed).is_ok())
+        .expect("no seed in 0..200 produced an accepted candidate with obfuscation_passes:2");
+
+    let a = plant(&spec, seed).expect("seed was already confirmed Ok above");
+    let b = plant(&spec, seed).expect("seed was already confirmed Ok above");
+
+    assert_eq!(a.par, b.par);
+    let premises_a: Vec<String> = a.theorem.premises.iter().map(|f| f.ascii_string_bracketed()).collect();
+    let premises_b: Vec<String> = b.theorem.premises.iter().map(|f| f.ascii_string_bracketed()).collect();
+    assert_eq!(premises_a, premises_b);
+    assert_eq!(
+        a.theorem.conclusion.ascii_string_bracketed(),
+        b.theorem.conclusion.ascii_string_bracketed()
+    );
+    assert_eq!(a.proof.lines.len(), b.proof.lines.len());
+    for (la, lb) in a.proof.lines.iter().zip(b.proof.lines.iter()) {
+        assert_eq!(la.formula.ascii_string_bracketed(), lb.formula.ascii_string_bracketed());
+        assert_eq!(la.depth, lb.depth);
+        assert_eq!(la.justification.display_string(), lb.justification.display_string());
+    }
 }
