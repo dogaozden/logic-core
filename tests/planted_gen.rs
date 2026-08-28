@@ -318,3 +318,51 @@ fn plant_with_obfuscation_is_deterministic() {
         assert_eq!(la.justification.display_string(), lb.justification.display_string());
     }
 }
+
+/// `subproofs > 0` and `obfuscation_passes > 0` composed together: the
+/// costume pass's body replay must preserve subproof scope structure
+/// (open_subproof/close_subproof, exactly as `rebuild_proof` does) around
+/// prologue/epilogue Equivalence lines. This is the highest integration
+/// risk in Task 5 — a silent regression here would corrupt subproof-bearing
+/// answer-key entries — so it needs its own committed coverage rather than
+/// being inferred from the subproof-only and obfuscation-only tests above.
+/// Mirrors test (a)'s shape (verify + complete + par-exact), and
+/// additionally requires several checked candidates to actually contain a
+/// subproof so the assertions aren't vacuously true. Seed budget calibrated
+/// small (0..150 yields ~19 accepted candidates, all subproof-bearing, in
+/// well under a second) to keep suite runtime sane per review guidance.
+#[test]
+fn plant_with_subproofs_and_obfuscation_compose() {
+    let mut spec = spec_with_subproofs(2);
+    spec.obfuscation_passes = 2;
+    let mut checked = 0;
+    let mut with_subproof = 0;
+    for seed in 0..150u64 {
+        if let Ok(c) = plant(&spec, seed) {
+            checked += 1;
+            assert_eq!(
+                c.par,
+                c.proof.lines.len() - c.theorem.premises.len(),
+                "seed {seed}: par must equal total lines minus premises"
+            );
+            let mut p = c.proof.clone();
+            logic_core::services::ProofVerifier::verify_proof(&mut p);
+            assert!(
+                p.lines.iter().all(|l| l.is_valid),
+                "seed {seed}: subproof+costume candidate failed native verification"
+            );
+            assert!(
+                p.check_complete(),
+                "seed {seed}: subproof+costume candidate is not complete"
+            );
+            if contains_subproof(&c.proof) {
+                with_subproof += 1;
+            }
+        }
+    }
+    assert!(checked >= 10, "yield too low for subproofs:2 + obfuscation:2: {checked}/150");
+    assert!(
+        with_subproof >= 3,
+        "too few subproof-bearing candidates to meaningfully exercise the composition: {with_subproof}/{checked}"
+    );
+}
