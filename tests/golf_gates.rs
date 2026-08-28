@@ -1,6 +1,6 @@
 use logic_core::models::rules::InferenceRule;
 use logic_core::models::{Difficulty, Formula, Justification, Proof, Theorem};
-use logic_core::services::{golf_gate, plant, GateConfig, GateReject, PlantSpec, PlantedCandidate};
+use logic_core::services::{golf_gate, plant, GateConfig, GateReject, OptimalConfig, PlantSpec, PlantedCandidate};
 
 fn f(s: &str) -> Formula {
     Formula::parse(s).unwrap()
@@ -131,4 +131,75 @@ fn plant_generated_par_6_is_cracked_by_lawyer_probe() {
         }
         other => panic!("expected LawyerProbeCracked for pinned seed {seed}, got {other:?}"),
     }
+}
+
+// ─── Fix round 1 (review response): freeze-branch and full-pass coverage ───
+//
+// The five tests above all use `GateConfig::default()`, whose `freeze` field
+// is `None` — so none of them ever reach `golf_gate`'s freeze branch or its
+// terminal `Ok(())`. Both are added below.
+
+#[test]
+fn freeze_configured_and_cracked_is_lawyer_freeze_cracked() {
+    // Reuses the exact same clean MP-chain shape as the greedy test above
+    // (already hand-verified cheese-clean: see that test's comment) — but
+    // here every earlier stage is deliberately starved of the budget it
+    // needs to finish, so only the freeze stage (given a normal budget)
+    // actually finds the proof:
+    //   - greedy_max_lines: 1 stops the philosopher one line short of its
+    //     real 2-MP solution (it derives Q, then hits its line cap before
+    //     deriving R) -- see greedy.rs's `try_subproof`-style budget
+    //     checks; here it's the plain top-level `transcript.len() >=
+    //     max_lines` check.
+    //   - probe.max_lines: 1 is too shallow for the lawyer to find the
+    //     2-line proof either: forward_moves' first MP consumes the whole
+    //     budget, and IP (the only structural alternative for a bare-atom
+    //     goal) unconditionally requires budget >= 2, so nothing else is
+    //     even attempted at depth 1 -- exhausts cleanly to
+    //     NotProvedWithinBounds.
+    //   - freeze: Some(OptimalConfig::default()) has plenty of room (12
+    //     lines) and finds the real 2-line proof.
+    // This exercises golf_gate's `if let Some(freeze_cfg) = &cfg.freeze`
+    // branch, which none of the other tests in this file reach.
+    let premises = vec![f("P"), f("P > Q"), f("Q > R")];
+    let conclusion = f("R");
+    let c = hand_built(premises, conclusion, vec![]);
+
+    let cfg = GateConfig {
+        greedy_max_lines: 1,
+        probe: OptimalConfig { max_lines: 1, ..OptimalConfig::default() },
+        freeze: Some(OptimalConfig::default()),
+        ..GateConfig::default()
+    };
+
+    match golf_gate(&c, &cfg) {
+        Err(GateReject::LawyerFreezeCracked { lines }) => {
+            assert_eq!(lines, 2, "minimal proof of R from P, P>Q, Q>R is 2 MP steps");
+        }
+        other => panic!("expected LawyerFreezeCracked, got {other:?}"),
+    }
+}
+
+#[test]
+fn semantically_unentailed_candidate_survives_every_gate() {
+    // "P" does not semantically entail "Z" (independent atoms: P=true,
+    // Z=false is a counterexample), so every prover-backed gate fails to
+    // find a proof for a genuine reason, not a budget artifact:
+    //   - greedy: no mechanical move applies to a lone atom, and the
+    //     single-shot IP fallback finds no route either -- mirrors
+    //     greedy.rs's own `unprovable_returns_none` precedent (same shape,
+    //     premises=[Q] goal=P there).
+    //   - probe: optimal.rs's semantic-entailment oracle (`search`'s very
+    //     first check) rejects it in one truth-table sweep, instantly,
+    //     without any real syntactic search -- mirrors optimal.rs's own
+    //     `not_proved_when_semantically_unprovable` precedent.
+    // `freeze: None` (the default), so gate 5 is skipped and this lands on
+    // golf_gate's terminal `Ok(())` -- fast (no combinatorial search at
+    // any stage) and, unlike a budget-starved config, a genuine "nothing
+    // here to find" rather than "ran out of room to look."
+    let premises = vec![f("P")];
+    let conclusion = f("Z");
+    let c = hand_built(premises, conclusion, vec![]);
+
+    assert_eq!(golf_gate(&c, &GateConfig::default()), Ok(()));
 }
