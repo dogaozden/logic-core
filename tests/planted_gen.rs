@@ -1,5 +1,6 @@
-use logic_core::models::Justification;
-use logic_core::services::{plant, PlantSpec};
+use logic_core::models::rules::ProofTechnique;
+use logic_core::models::{Justification, Proof};
+use logic_core::services::{plant, PlantedCandidate, PlantSpec};
 
 fn small_spec() -> PlantSpec {
     PlantSpec {
@@ -81,6 +82,41 @@ fn plant_is_deterministic() {
     }
 }
 
+/// Shared by `cone_has_no_dead_lines` and its subproof-covering sibling
+/// below: every non-premise, non-conclusion line must be reachable from the
+/// conclusion by walking `referenced_lines()` alone.
+fn assert_cone_has_no_dead_lines(c: &PlantedCandidate, seed: u64) {
+    let n_premises = c.theorem.premises.len();
+    // The rebuild always appends the conclusion last (every other cone
+    // member is something the conclusion transitively depends on, so it
+    // must have a strictly earlier line number).
+    let conclusion_line = c.proof.lines.len();
+
+    let mut cited = std::collections::HashSet::new();
+    let mut stack = vec![conclusion_line];
+    while let Some(idx) = stack.pop() {
+        if cited.insert(idx) {
+            if let Some(line) = c.proof.get_line(idx) {
+                for r in line.justification.referenced_lines() {
+                    stack.push(r);
+                }
+            }
+        }
+    }
+
+    for line in &c.proof.lines {
+        let is_premise = line.line_number <= n_premises;
+        let is_conclusion = line.line_number == conclusion_line;
+        if !is_premise && !is_conclusion {
+            assert!(
+                cited.contains(&line.line_number),
+                "seed {seed}: line {} is dead (not cited by the conclusion)",
+                line.line_number
+            );
+        }
+    }
+}
+
 #[test]
 fn cone_has_no_dead_lines() {
     let spec = small_spec();
@@ -88,35 +124,26 @@ fn cone_has_no_dead_lines() {
     for seed in 0..50u64 {
         if let Ok(c) = plant(&spec, seed) {
             checked += 1;
-            let n_premises = c.theorem.premises.len();
-            // The rebuild always appends the conclusion last (every other cone
-            // member is something the conclusion transitively depends on, so it
-            // must have a strictly earlier line number).
-            let conclusion_line = c.proof.lines.len();
+            assert_cone_has_no_dead_lines(&c, seed);
+        }
+    }
+    assert!(checked > 0, "no seeds produced a candidate to check");
+}
 
-            let mut cited = std::collections::HashSet::new();
-            let mut stack = vec![conclusion_line];
-            while let Some(idx) = stack.pop() {
-                if cited.insert(idx) {
-                    if let Some(line) = c.proof.get_line(idx) {
-                        for r in line.justification.referenced_lines() {
-                            stack.push(r);
-                        }
-                    }
-                }
-            }
-
-            for line in &c.proof.lines {
-                let is_premise = line.line_number <= n_premises;
-                let is_conclusion = line.line_number == conclusion_line;
-                if !is_premise && !is_conclusion {
-                    assert!(
-                        cited.contains(&line.line_number),
-                        "seed {seed}: line {} is dead (not cited by the conclusion)",
-                        line.line_number
-                    );
-                }
-            }
+/// Extends the plain-growth check above to subproof-bearing candidates, now
+/// that scope-internal pruning (Ruling A, Task 8b) makes the conclusion's
+/// full `referenced_lines()` closure exactly equal to the proof's line set.
+/// Pre-fix this failed here too: a scope's filler lines were pulled in by
+/// `compute_cone`'s old whole-range pull but were never reachable by this
+/// walk. `subproofs: 2` also exercises nested scopes.
+#[test]
+fn cone_has_no_dead_lines_with_subproofs() {
+    let spec = spec_with_subproofs(2);
+    let mut checked = 0;
+    for seed in 0..300u64 {
+        if let Ok(c) = plant(&spec, seed) {
+            checked += 1;
+            assert_cone_has_no_dead_lines(&c, seed);
         }
     }
     assert!(checked > 0, "no seeds produced a candidate to check");
@@ -365,4 +392,227 @@ fn plant_with_subproofs_and_obfuscation_compose() {
         with_subproof >= 3,
         "too few subproof-bearing candidates to meaningfully exercise the composition: {with_subproof}/{checked}"
     );
+}
+
+// ─── Task 8b: scope dead-line pruning + duplicate-discharge rejection ──────
+
+/// Positions reachable from `anchor` (inclusive) by walking
+/// `referenced_lines()`, only recursing into references that fall inside
+/// `[start, end]` — mirrors the within-scope half of the anchor-transitive
+/// pruning rule `compute_cone` now applies in `planted_gen.rs` (a reference
+/// pointing outside the scope is an outer cone edge, not a scope-internal
+/// dependency, so it's excluded here without being followed further).
+fn within_scope_reachable(proof: &Proof, start: usize, end: usize) -> std::collections::HashSet<usize> {
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![end];
+    seen.insert(end);
+    while let Some(pos) = stack.pop() {
+        if let Some(line) = proof.get_line(pos) {
+            for r in line.justification.referenced_lines() {
+                if r >= start && r <= end && seen.insert(r) {
+                    stack.push(r);
+                }
+            }
+        }
+    }
+    seen
+}
+
+/// Ruling A (Task 8b), fix 1: within a kept IP scope, only the assumption
+/// and whatever the contradiction line transitively requires should survive
+/// — filler growth `grow_ip_subproof` may add before closing the
+/// contradiction must NOT ride along "for free". Pre-fix, Task 8 measured
+/// this failing for 76% of IP scopes (44/58, mean 1.45 dead lines each); see
+/// `docs/superpowers/plans/2026-08-24-proof-golf-MEASUREMENTS.md` §4.
+#[test]
+fn ip_scopes_carry_no_dead_lines() {
+    let spec = spec_with_subproofs(1);
+    let mut ip_bearing_accepts = 0usize;
+    let mut scopes_checked = 0usize;
+    let mut violations: Vec<String> = Vec::new();
+    let mut seed = 0u64;
+    while ip_bearing_accepts < 10 && seed < 5000 {
+        if let Ok(c) = plant(&spec, seed) {
+            let mut has_ip = false;
+            for line in &c.proof.lines {
+                if let Justification::SubproofConclusion {
+                    technique: ProofTechnique::IndirectProof,
+                    subproof_start,
+                    subproof_end,
+                } = &line.justification
+                {
+                    let (start, end) = (*subproof_start, *subproof_end);
+                    has_ip = true;
+                    scopes_checked += 1;
+                    let required = within_scope_reachable(&c.proof, start, end);
+                    for pos in (start + 1)..=end {
+                        if !required.contains(&pos) {
+                            violations.push(format!(
+                                "seed {seed}: IP scope [{start},{end}] line {pos} is dead \
+                                 (not transitively cited by the contradiction at {end})"
+                            ));
+                        }
+                    }
+                }
+            }
+            if has_ip {
+                ip_bearing_accepts += 1;
+            }
+        }
+        seed += 1;
+    }
+    assert!(
+        ip_bearing_accepts >= 10,
+        "only found {ip_bearing_accepts} IP-bearing accepts in seeds 0..{seed}"
+    );
+    assert!(
+        violations.is_empty(),
+        "{} dead scope-internal line(s) across {scopes_checked} IP scopes:\n{}",
+        violations.len(),
+        violations.join("\n")
+    );
+}
+
+/// Ruling A (Task 8b), fix 1: within a kept CP scope, only the assumption
+/// and whatever the discharged consequent (the scope's final inner line)
+/// transitively requires should survive.
+#[test]
+fn cp_scopes_carry_no_dead_lines() {
+    let spec = spec_with_subproofs(1);
+    let mut cp_bearing_accepts = 0usize;
+    let mut scopes_checked = 0usize;
+    let mut violations: Vec<String> = Vec::new();
+    let mut seed = 0u64;
+    while cp_bearing_accepts < 10 && seed < 5000 {
+        if let Ok(c) = plant(&spec, seed) {
+            let mut has_cp = false;
+            for line in &c.proof.lines {
+                if let Justification::SubproofConclusion {
+                    technique: ProofTechnique::ConditionalProof,
+                    subproof_start,
+                    subproof_end,
+                } = &line.justification
+                {
+                    let (start, end) = (*subproof_start, *subproof_end);
+                    has_cp = true;
+                    scopes_checked += 1;
+                    let required = within_scope_reachable(&c.proof, start, end);
+                    for pos in (start + 1)..=end {
+                        if !required.contains(&pos) {
+                            violations.push(format!(
+                                "seed {seed}: CP scope [{start},{end}] line {pos} is dead \
+                                 (not transitively cited by the discharged consequent at {end})"
+                            ));
+                        }
+                    }
+                }
+            }
+            if has_cp {
+                cp_bearing_accepts += 1;
+            }
+        }
+        seed += 1;
+    }
+    assert!(
+        cp_bearing_accepts >= 10,
+        "only found {cp_bearing_accepts} CP-bearing accepts in seeds 0..{seed}"
+    );
+    assert!(
+        violations.is_empty(),
+        "{} dead scope-internal line(s) across {scopes_checked} CP scopes:\n{}",
+        violations.len(),
+        violations.join("\n")
+    );
+}
+
+/// Ruling A (Task 8b), fix 2: a subproof's discharge must not merely
+/// reproduce a formula that was already accessible before the scope opened
+/// — that's the measured redundant-chain pattern (`g1-100029`: three
+/// sequential IP subproofs re-deriving the same formula, 15 of 21 par lines
+/// wasted; see MEASUREMENTS.md §4's "Bonus observation").
+///
+/// IP's discharge is *definitionally* its own seed line's formula
+/// (`grow_ip_subproof` clones it verbatim), so exactly one accessible match
+/// — the seed itself, which fix 1 keeps in every pruned scope — is
+/// unavoidable and expected; a *second* independent match is the redundant
+/// chain this rule targets, hence threshold 2 for IP discharges vs. 1 for
+/// CP's (a fresh implication with no definitional self-match).
+#[test]
+fn no_duplicate_discharge() {
+    let spec = spec_with_subproofs(1);
+    let mut checked = 0usize;
+    let mut violations: Vec<String> = Vec::new();
+    for seed in 0..2000u64 {
+        if let Ok(c) = plant(&spec, seed) {
+            checked += 1;
+            for line in &c.proof.lines {
+                let threshold = match &line.justification {
+                    Justification::SubproofConclusion { technique: ProofTechnique::IndirectProof, .. } => 2,
+                    Justification::SubproofConclusion { .. } => 1,
+                    _ => continue,
+                };
+                let matches: Vec<usize> = c
+                    .proof
+                    .lines
+                    .iter()
+                    .filter(|earlier| {
+                        earlier.line_number < line.line_number
+                            && earlier.formula == line.formula
+                            && c.proof.is_line_accessible(line.line_number, earlier.line_number)
+                    })
+                    .map(|earlier| earlier.line_number)
+                    .collect();
+                if matches.len() >= threshold {
+                    violations.push(format!(
+                        "seed {seed}: discharge at line {} duplicates accessible line(s) {matches:?}",
+                        line.line_number
+                    ));
+                }
+            }
+        }
+    }
+    assert!(checked > 0, "no seeds produced a candidate to check");
+    assert!(
+        violations.is_empty(),
+        "{} duplicate discharge(s) found across {checked} accepted candidates:\n{}",
+        violations.len(),
+        violations.join("\n")
+    );
+}
+
+/// Determinism holds through the new scope-internal pruning and
+/// duplicate-discharge rejection (Ruling A, Task 8b) — not just for one
+/// hand-picked seed (`plant_is_deterministic_with_subproofs` above), but
+/// across a broad range, so the new logic's several branches (pruned-empty
+/// interior, nested-scope recursion, IP rejection, CP rejection) all get
+/// exercised at least once under a same-seed-twice check.
+#[test]
+fn plant_is_deterministic_across_many_subproof_seeds() {
+    let spec = spec_with_subproofs(2);
+    let mut checked = 0usize;
+    for seed in 0..300u64 {
+        let a = plant(&spec, seed);
+        let b = plant(&spec, seed);
+        match (a, b) {
+            (Ok(ca), Ok(cb)) => {
+                checked += 1;
+                assert_eq!(ca.par, cb.par, "seed {seed}: par mismatch");
+                assert_eq!(ca.proof.lines.len(), cb.proof.lines.len(), "seed {seed}: line count mismatch");
+                for (la, lb) in ca.proof.lines.iter().zip(cb.proof.lines.iter()) {
+                    assert_eq!(la.formula, lb.formula, "seed {seed}: formula mismatch");
+                    assert_eq!(la.depth, lb.depth, "seed {seed}: depth mismatch");
+                    assert_eq!(
+                        la.justification.display_string(),
+                        lb.justification.display_string(),
+                        "seed {seed}: justification mismatch"
+                    );
+                }
+            }
+            (Err(ea), Err(eb)) => {
+                assert_eq!(format!("{ea:?}"), format!("{eb:?}"), "seed {seed}: error mismatch");
+            }
+            other => panic!("seed {seed}: plant(&spec, {seed}) is not deterministic across calls: {other:?}"),
+        }
+    }
+    assert!(checked > 0, "no seeds under subproofs:2 produced a candidate to check");
 }

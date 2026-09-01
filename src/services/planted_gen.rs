@@ -309,6 +309,31 @@ fn is_duplicate(scratch: &[(Formula, Justification)], formula: &Formula) -> bool
     scratch.iter().any(|(f, _)| f == formula)
 }
 
+/// Whether `formula` is byte-equal (`Formula` equality, `==`) to the formula
+/// at some position in `pool` other than a position listed in `exclude` —
+/// used by `grow_cp_subproof`/`grow_ip_subproof` to reject a subproof whose
+/// discharge merely reproduces a formula that was already accessible before
+/// the scope opened (Ruling A, Task 8b's duplicate-discharge rejection),
+/// rather than contributing something the outer pool didn't already have.
+///
+/// `exclude` lets a caller skip a position the discharge is *definitionally*
+/// guaranteed to match: IP's discharge is always exactly its own seed line's
+/// formula (`grow_ip_subproof` clones it verbatim), so comparing against the
+/// seed position itself would reject every IP subproof unconditionally;
+/// excluding just that one position still catches a discharge that
+/// duplicates any *other* already-accessible line — the redundant-chain
+/// pattern this rule targets. CP's discharge is a fresh implication never
+/// definitionally tied to a single outer position, so it calls this with an
+/// empty `exclude`.
+fn discharge_duplicates_outer_pool(
+    scratch: &[(Formula, Justification)],
+    pool: &[usize],
+    exclude: &[usize],
+    formula: &Formula,
+) -> bool {
+    pool.iter().any(|&p| !exclude.contains(&p) && scratch[p - 1].0 == *formula)
+}
+
 fn within_len(formula: &Formula, spec: &PlantSpec) -> bool {
     formula.ascii_string_bracketed().chars().count() <= spec.max_formula_len
 }
@@ -726,7 +751,9 @@ fn restore(
 /// subproof of their own), then discharge `A > X` where `X` is the last
 /// inner line's formula. Aborts (rolling back to exactly the pre-call state)
 /// if fewer than 2 inner steps can be grown within budget, or if the
-/// discharge formula is a duplicate or too long.
+/// discharge formula duplicates a formula already accessible before the
+/// scope opened (Ruling A, Task 8b — see `discharge_duplicates_outer_pool`)
+/// or is too long.
 fn grow_cp_subproof(
     scratch: &mut Vec<(Formula, Justification)>,
     consumed: &mut Vec<usize>,
@@ -741,6 +768,7 @@ fn grow_cp_subproof(
     }
 
     let cp = checkpoint(scratch, consumed);
+    let outer_pool = accessible_positions(scopes, scratch.len());
     let assumption_pos = scratch.len() + 1;
     scopes.open(assumption_pos);
     scratch.push((assumption.clone(), Justification::Assumption { technique: ProofTechnique::ConditionalProof }));
@@ -766,7 +794,7 @@ fn grow_cp_subproof(
     let last_inner_formula = scratch[last_inner_pos - 1].0.clone();
     let conclusion = Formula::Implies(Box::new(assumption), Box::new(last_inner_formula));
 
-    if is_duplicate(scratch, &conclusion) || !within_len(&conclusion, spec) {
+    if discharge_duplicates_outer_pool(scratch, &outer_pool, &[], &conclusion) || !within_len(&conclusion, spec) {
         restore(cp, scratch, consumed, scopes);
         return false;
     }
@@ -793,8 +821,18 @@ fn grow_cp_subproof(
 /// moment the scope opens — an immediate `Contradiction` (NegE) citing
 /// `[seed_pos, assumption_pos]` is always available, regardless of whatever
 /// filler growth happens first. The discharge then yields `Y` back (IP
-/// removes the assumption's negation). Unlike CP, this can never fail once
-/// past the initial checks — there's nothing to roll back.
+/// removes the assumption's negation).
+///
+/// Aborts (rolling back to exactly the pre-call state, like
+/// `grow_cp_subproof`) if the discharge — which is always exactly `Y`, the
+/// seed line's own formula, verbatim — duplicates some *other*
+/// already-accessible outer line (Ruling A, Task 8b's duplicate-discharge
+/// rejection; the seed position itself is excluded from this check, since
+/// the discharge is definitionally guaranteed to match it — see
+/// `discharge_duplicates_outer_pool`). This is what stops a chain of IP
+/// subproofs from re-deriving the same already-established formula over and
+/// over. Past that check, this can never fail — there's nothing else to roll
+/// back.
 fn grow_ip_subproof(
     scratch: &mut Vec<(Formula, Justification)>,
     consumed: &mut Vec<usize>,
@@ -815,6 +853,7 @@ fn grow_ip_subproof(
         return false;
     }
 
+    let cp = checkpoint(scratch, consumed);
     let assumption_pos = scratch.len() + 1;
     scopes.open(assumption_pos);
     scratch.push((assumption, Justification::Assumption { technique: ProofTechnique::IndirectProof }));
@@ -843,6 +882,12 @@ fn grow_ip_subproof(
     let contradiction_pos = scratch.len();
 
     scopes.close(contradiction_pos);
+
+    if discharge_duplicates_outer_pool(scratch, &eligible, &[seed_pos], &seed_formula) {
+        restore(cp, scratch, consumed, scopes);
+        return false;
+    }
+
     consumed[assumption_pos - 1] += 1;
     consumed[contradiction_pos - 1] += 1;
     scratch.push((
@@ -862,15 +907,21 @@ fn grow_ip_subproof(
 /// itself. Returned sorted ascending (also a valid rebuild/topological order,
 /// since every citation points strictly backward in scratch position).
 ///
-/// Scope-atomic: whenever the walk reaches a `SubproofConclusion` (discharge)
-/// line, the *entire* closed scope `[subproof_start, subproof_end]` is pulled
-/// in, not just the two endpoints `referenced_lines()` names. This is safe
-/// (never pulls in unrelated content) because scope ranges are always
-/// contiguous blocks of scratch positions populated by exactly one subproof
-/// action — see `try_subproof_step`. It's also necessary: growth never lets
-/// a citation reach *into* a closed scope except via its own discharge line
-/// (`ScratchScopes::is_accessible`), so an assumption or inner line can only
-/// ever enter the cone this way, and always as a complete, closeable unit.
+/// Scope-pruned, not scope-atomic (Ruling A, Task 8b): reaching a
+/// `SubproofConclusion` (discharge) line no longer pulls in the entire closed
+/// scope. `Justification::referenced_lines()` already names exactly
+/// `[subproof_start, subproof_end]` for a discharge — the assumption
+/// (`subproof_start`) unconditionally, and the scope's anchor
+/// (`subproof_end`: IP's contradiction line, or CP's discharged consequent —
+/// the line the discharge's validity actually hinges on) — so the ordinary
+/// walk below, with no extra handling, pulls in the assumption plus exactly
+/// what the anchor transitively requires: a within-scope citation recurses
+/// through this same walk (including into any nested scope's own discharge,
+/// pruned by the same rule), while a citation pointing outside the scope
+/// becomes an ordinary cone edge, exactly as it always did. Anything inside
+/// the scope the anchor's chain never reaches (filler growth in
+/// `grow_ip_subproof`, or an inner CP step nothing downstream cites) is
+/// simply never pushed, so it never enters the cone.
 fn compute_cone(scratch: &[(Formula, Justification)], target: usize) -> Vec<usize> {
     let mut seen = vec![false; scratch.len() + 1];
     let mut stack = vec![target];
@@ -882,14 +933,6 @@ fn compute_cone(scratch: &[(Formula, Justification)], target: usize) -> Vec<usiz
             if !seen[r] {
                 seen[r] = true;
                 stack.push(r);
-            }
-        }
-        if let Justification::SubproofConclusion { subproof_start, subproof_end, .. } = &scratch[idx - 1].1 {
-            for p in *subproof_start..=*subproof_end {
-                if !seen[p] {
-                    seen[p] = true;
-                    stack.push(p);
-                }
             }
         }
     }
@@ -929,11 +972,14 @@ fn remap_justification(j: &Justification, remap: &[Option<usize>]) -> Justificat
 /// (`Inference`/`Equivalence`) still goes through `add_line` with citations
 /// remapped via `remap_justification`, exactly as in Task 3.
 ///
-/// This only produces well-formed scope nesting because cone membership is
-/// scope-atomic (see `compute_cone`): a scope's assumption and discharge are
-/// always both in `cone_derived_positions` or both absent, so every
-/// `open_subproof` replayed here has a matching `close_subproof` later in
-/// the same loop, in the same relative order.
+/// This only produces well-formed scope nesting because a scope's assumption
+/// and discharge are always both in `cone_derived_positions` or both absent
+/// (see `compute_cone`: a discharge's `referenced_lines()` always names both
+/// `subproof_start` and `subproof_end`, so pulling in the discharge always
+/// pulls in the assumption too, and nothing outside the scope can ever reach
+/// the assumption any other way), so every `open_subproof` replayed here has
+/// a matching `close_subproof` later in the same loop, in the same relative
+/// order.
 fn rebuild_proof(
     scratch: &[(Formula, Justification)],
     cone: &[usize],
