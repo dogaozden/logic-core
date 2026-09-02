@@ -525,18 +525,72 @@ fn cp_scopes_carry_no_dead_lines() {
     );
 }
 
-/// Ruling A (Task 8b), fix 2: a subproof's discharge must not merely
-/// reproduce a formula that was already accessible before the scope opened
-/// — that's the measured redundant-chain pattern (`g1-100029`: three
-/// sequential IP subproofs re-deriving the same formula, 15 of 21 par lines
-/// wasted; see MEASUREMENTS.md §4's "Bonus observation").
+/// Ruling E (Task 8c): an IP discharge must be a FRESH formula — not
+/// byte-equal to any formula on an earlier line accessible from the
+/// discharge's own position, not merely a re-statement of the seed line's
+/// formula. Pre-v0.3.2, `grow_ip_subproof` always discharged exactly its
+/// own seed line's formula verbatim, so this must fail against v0.3.1 for
+/// every single IP-bearing accept — see the report for the recorded
+/// pre-fix count.
+#[test]
+fn ip_discharges_are_fresh_formulas() {
+    let spec = spec_with_subproofs(1);
+    let mut ip_bearing_accepts = 0usize;
+    let mut violations: Vec<String> = Vec::new();
+    let mut seed = 0u64;
+    while ip_bearing_accepts < 10 && seed < 5000 {
+        if let Ok(c) = plant(&spec, seed) {
+            let mut has_ip = false;
+            for line in &c.proof.lines {
+                if let Justification::SubproofConclusion {
+                    technique: ProofTechnique::IndirectProof, ..
+                } = &line.justification
+                {
+                    has_ip = true;
+                    let dup = c.proof.lines.iter().any(|earlier| {
+                        earlier.line_number < line.line_number
+                            && earlier.formula == line.formula
+                            && c.proof.is_line_accessible(line.line_number, earlier.line_number)
+                    });
+                    if dup {
+                        violations.push(format!(
+                            "seed {seed}: IP discharge at line {} duplicates an earlier accessible formula",
+                            line.line_number
+                        ));
+                    }
+                }
+            }
+            if has_ip {
+                ip_bearing_accepts += 1;
+            }
+        }
+        seed += 1;
+    }
+    assert!(
+        ip_bearing_accepts >= 10,
+        "only found {ip_bearing_accepts} IP-bearing accepts in seeds 0..{seed}"
+    );
+    assert!(
+        violations.is_empty(),
+        "{} IP discharge(s) duplicated an earlier accessible formula across {ip_bearing_accepts} IP-bearing accepts:\n{}",
+        violations.len(),
+        violations.join("\n")
+    );
+}
+
+/// Ruling A (Task 8b), fix 2, unconditional as of Ruling E (Task 8c): a
+/// subproof's discharge must not reproduce a formula that was already
+/// accessible before the scope opened — that's the measured redundant-chain
+/// pattern (`g1-100029`: three sequential IP subproofs re-deriving the same
+/// formula, 15 of 21 par lines wasted; see MEASUREMENTS.md §4's "Bonus
+/// observation").
 ///
-/// IP's discharge is *definitionally* its own seed line's formula
-/// (`grow_ip_subproof` clones it verbatim), so exactly one accessible match
-/// — the seed itself, which fix 1 keeps in every pruned scope — is
-/// unavoidable and expected; a *second* independent match is the redundant
-/// chain this rule targets, hence threshold 2 for IP discharges vs. 1 for
-/// CP's (a fresh implication with no definitional self-match).
+/// Pre-Task-8c, IP's discharge was *definitionally* its own seed line's
+/// formula, so exactly one accessible match (the seed itself) was
+/// unavoidable and had to be tolerated (threshold 2, vs. 1 for CP's fresh
+/// implication). Task 8c's template-based `grow_ip_subproof` discharges a
+/// genuinely fresh compound formula never tied to the seed, so IP now holds
+/// to the same threshold-1 (zero tolerance) bar as CP.
 #[test]
 fn no_duplicate_discharge() {
     let spec = spec_with_subproofs(1);
@@ -546,11 +600,9 @@ fn no_duplicate_discharge() {
         if let Ok(c) = plant(&spec, seed) {
             checked += 1;
             for line in &c.proof.lines {
-                let threshold = match &line.justification {
-                    Justification::SubproofConclusion { technique: ProofTechnique::IndirectProof, .. } => 2,
-                    Justification::SubproofConclusion { .. } => 1,
-                    _ => continue,
-                };
+                if !matches!(line.justification, Justification::SubproofConclusion { .. }) {
+                    continue;
+                }
                 let matches: Vec<usize> = c
                     .proof
                     .lines
@@ -562,7 +614,7 @@ fn no_duplicate_discharge() {
                     })
                     .map(|earlier| earlier.line_number)
                     .collect();
-                if matches.len() >= threshold {
+                if !matches.is_empty() {
                     violations.push(format!(
                         "seed {seed}: discharge at line {} duplicates accessible line(s) {matches:?}",
                         line.line_number

@@ -310,28 +310,14 @@ fn is_duplicate(scratch: &[(Formula, Justification)], formula: &Formula) -> bool
 }
 
 /// Whether `formula` is byte-equal (`Formula` equality, `==`) to the formula
-/// at some position in `pool` other than a position listed in `exclude` —
-/// used by `grow_cp_subproof`/`grow_ip_subproof` to reject a subproof whose
-/// discharge merely reproduces a formula that was already accessible before
-/// the scope opened (Ruling A, Task 8b's duplicate-discharge rejection),
-/// rather than contributing something the outer pool didn't already have.
-///
-/// `exclude` lets a caller skip a position the discharge is *definitionally*
-/// guaranteed to match: IP's discharge is always exactly its own seed line's
-/// formula (`grow_ip_subproof` clones it verbatim), so comparing against the
-/// seed position itself would reject every IP subproof unconditionally;
-/// excluding just that one position still catches a discharge that
-/// duplicates any *other* already-accessible line — the redundant-chain
-/// pattern this rule targets. CP's discharge is a fresh implication never
-/// definitionally tied to a single outer position, so it calls this with an
-/// empty `exclude`.
-fn discharge_duplicates_outer_pool(
-    scratch: &[(Formula, Justification)],
-    pool: &[usize],
-    exclude: &[usize],
-    formula: &Formula,
-) -> bool {
-    pool.iter().any(|&p| !exclude.contains(&p) && scratch[p - 1].0 == *formula)
+/// at some position in `pool` — used by `grow_cp_subproof`/`grow_ip_subproof`
+/// to reject a subproof whose discharge merely reproduces a formula that was
+/// already accessible before the scope opened (Ruling A, Task 8b's
+/// duplicate-discharge rejection; unconditional for both CP and IP as of
+/// Ruling E, Task 8c — see `grow_ip_subproof`'s doc comment), rather than
+/// contributing something the outer pool didn't already have.
+fn discharge_duplicates_outer_pool(scratch: &[(Formula, Justification)], pool: &[usize], formula: &Formula) -> bool {
+    pool.iter().any(|&p| scratch[p - 1].0 == *formula)
 }
 
 fn within_len(formula: &Formula, spec: &PlantSpec) -> bool {
@@ -794,7 +780,7 @@ fn grow_cp_subproof(
     let last_inner_formula = scratch[last_inner_pos - 1].0.clone();
     let conclusion = Formula::Implies(Box::new(assumption), Box::new(last_inner_formula));
 
-    if discharge_duplicates_outer_pool(scratch, &outer_pool, &[], &conclusion) || !within_len(&conclusion, spec) {
+    if discharge_duplicates_outer_pool(scratch, &outer_pool, &conclusion) || !within_len(&conclusion, spec) {
         restore(cp, scratch, consumed, scopes);
         return false;
     }
@@ -814,25 +800,56 @@ fn grow_cp_subproof(
     true
 }
 
-/// Plant an Indirect Proof subproof. Seeds the contradiction on an existing
-/// accessible outer line `Y` (the brief's "pick an outer line and construct
-/// its negation path"): the assumption is `~Y`, so `Y` (outer, accessible)
-/// and `~Y` (the assumption itself) are *already* a contradictory pair the
-/// moment the scope opens — an immediate `Contradiction` (NegE) citing
-/// `[seed_pos, assumption_pos]` is always available, regardless of whatever
-/// filler growth happens first. The discharge then yields `Y` back (IP
-/// removes the assumption's negation).
+/// `ConjNegElim` template (Ruling E, Task 8c): `G = ~(B . ~A)`, for pool
+/// anchor formula `A` and freshly sampled literal `B`. Returns `(peel_rule,
+/// assumption, step_a, step_b, discharge)` — `assumption = ~G`, `step_a` is
+/// what `peel_rule` (DoubleNegation) rewrites `assumption` to (`B . ~A`),
+/// and `step_b` is what Simplification extracts from `step_a` (`~A`, the
+/// right conjunct) — the formula `grow_ip_subproof` then contradicts
+/// against the anchor's own `A` via NegE.
+fn conj_neg_elim_template(a: &Formula, b: Formula) -> (EquivalenceRule, Formula, Formula, Formula, Formula) {
+    let not_a = Formula::Not(Box::new(a.clone()));
+    let step_a = Formula::And(Box::new(b), Box::new(not_a.clone())); // B . ~A
+    let discharge = Formula::Not(Box::new(step_a.clone())); // ~(B . ~A)
+    let assumption = Formula::Not(Box::new(discharge.clone())); // ~~(B . ~A)
+    (EquivalenceRule::DoubleNegation, assumption, step_a, not_a, discharge)
+}
+
+/// `DisjNegElim` template (Ruling E, Task 8c): `G = A ∨ B`, for pool anchor
+/// formula `A` and freshly sampled literal `B`. Returns the same
+/// `(peel_rule, assumption, step_a, step_b, discharge)` shape as
+/// `conj_neg_elim_template`, but peels via De Morgan instead of Double
+/// Negation: `assumption = ~(A∨B)` --DeMorgan--> `~A . ~B` (`step_a`)
+/// --Simp--> `~A` (`step_b`, the left conjunct this time).
+fn disj_neg_elim_template(a: &Formula, b: Formula) -> (EquivalenceRule, Formula, Formula, Formula, Formula) {
+    let not_a = Formula::Not(Box::new(a.clone()));
+    let not_b = Formula::Not(Box::new(b.clone()));
+    let discharge = Formula::Or(Box::new(a.clone()), Box::new(b)); // A ∨ B
+    let assumption = Formula::Not(Box::new(discharge.clone())); // ~(A ∨ B)
+    let step_a = Formula::And(Box::new(not_a.clone()), Box::new(not_b)); // ~A . ~B
+    (EquivalenceRule::DeMorgan, assumption, step_a, not_a, discharge)
+}
+
+/// Plant an Indirect Proof subproof from a small refutation template
+/// (Ruling E, Task 8c). Seeds on an existing accessible outer line `Y`
+/// (formula `A`) and a freshly sampled literal `B`, then samples one of two
+/// template shapes (`conj_neg_elim_template`/`disj_neg_elim_template`, equal
+/// probability) giving a *fresh* discharge `G` together with the exact
+/// assumption `~G` and the 2 real inner steps (an equivalence peel, then
+/// Simplification) that derive `~A` from it — closed by a NegE citing `[Y,
+/// that ~A line]`. Unlike the pre-Task-8c version, `G` is a novel compound
+/// formula, never byte-equal to `Y` or anything else: shaving the scope now
+/// requires finding an alternative derivation of `G`, not just re-citing an
+/// outer line.
 ///
-/// Aborts (rolling back to exactly the pre-call state, like
-/// `grow_cp_subproof`) if the discharge — which is always exactly `Y`, the
-/// seed line's own formula, verbatim — duplicates some *other*
-/// already-accessible outer line (Ruling A, Task 8b's duplicate-discharge
-/// rejection; the seed position itself is excluded from this check, since
-/// the discharge is definitionally guaranteed to match it — see
-/// `discharge_duplicates_outer_pool`). This is what stops a chain of IP
-/// subproofs from re-deriving the same already-established formula over and
-/// over. Past that check, this can never fail — there's nothing else to roll
-/// back.
+/// Both template formulas (`assumption`, `step_a`, `step_b`, and `G` itself)
+/// are computed up front, before any scratch/scope mutation — `G` doesn't
+/// depend on grown content the way CP's discharge does, so an over-length
+/// formula or a `G` that collides with the outer pool (frozen as `eligible`,
+/// computed before the scope opens — Task 8b's "open-time-frozen pool") can
+/// be rejected by simply not committing anything, no checkpoint/rollback
+/// needed (contrast `grow_cp_subproof`, whose discharge is only known after
+/// inner growth completes).
 fn grow_ip_subproof(
     scratch: &mut Vec<(Formula, Justification)>,
     consumed: &mut Vec<usize>,
@@ -848,19 +865,33 @@ fn grow_ip_subproof(
     }
     let seed_pos = weighted_pick_line(&eligible, n, consumed, rng);
     let seed_formula = scratch[seed_pos - 1].0.clone();
-    let assumption = Formula::Not(Box::new(seed_formula.clone()));
-    if !within_len(&assumption, spec) {
+    let b = sample_literal(rng, atoms);
+
+    let (peel_rule, assumption, step_a, step_b, discharge) = if rng.gen_bool(0.5) {
+        conj_neg_elim_template(&seed_formula, b)
+    } else {
+        disj_neg_elim_template(&seed_formula, b)
+    };
+
+    if !within_len(&assumption, spec)
+        || !within_len(&step_a, spec)
+        || !within_len(&step_b, spec)
+        || !within_len(&discharge, spec)
+        || discharge_duplicates_outer_pool(scratch, &eligible, &discharge)
+    {
         return false;
     }
 
-    let cp = checkpoint(scratch, consumed);
     let assumption_pos = scratch.len() + 1;
     scopes.open(assumption_pos);
     scratch.push((assumption, Justification::Assumption { technique: ProofTechnique::IndirectProof }));
     consumed.push(0);
 
-    // Optional filler growth before closing the contradiction (0..=3 steps);
-    // purely cosmetic variety — the contradiction below doesn't depend on it.
+    // Optional filler growth before the fixed derivation (0..=3 steps);
+    // purely cosmetic variety, like the old code's — v0.3.1 scope-internal
+    // pruning (`compute_cone`) drops anything the contradiction doesn't
+    // transitively need, so filler can never leave a dead line in a kept
+    // scope, and can itself nest a subproof when `spec.subproofs` allows.
     let n_extra = rng.gen_range(0..=3);
     let mut grown = 0usize;
     let budget = (n_extra * 15).max(20);
@@ -872,26 +903,34 @@ fn grow_ip_subproof(
         }
     }
 
-    consumed[seed_pos - 1] += 1;
     consumed[assumption_pos - 1] += 1;
+    scratch.push((step_a, Justification::Equivalence { rule: peel_rule, line: assumption_pos }));
+    consumed.push(0);
+    let step_a_pos = scratch.len();
+
+    consumed[step_a_pos - 1] += 1;
+    scratch.push((
+        step_b,
+        Justification::Inference { rule: InferenceRule::Simplification, lines: vec![step_a_pos] },
+    ));
+    consumed.push(0);
+    let step_b_pos = scratch.len();
+
+    consumed[seed_pos - 1] += 1;
+    consumed[step_b_pos - 1] += 1;
     scratch.push((
         Formula::Contradiction,
-        Justification::Inference { rule: InferenceRule::Contradiction, lines: vec![seed_pos, assumption_pos] },
+        Justification::Inference { rule: InferenceRule::Contradiction, lines: vec![seed_pos, step_b_pos] },
     ));
     consumed.push(0);
     let contradiction_pos = scratch.len();
 
     scopes.close(contradiction_pos);
 
-    if discharge_duplicates_outer_pool(scratch, &eligible, &[seed_pos], &seed_formula) {
-        restore(cp, scratch, consumed, scopes);
-        return false;
-    }
-
     consumed[assumption_pos - 1] += 1;
     consumed[contradiction_pos - 1] += 1;
     scratch.push((
-        seed_formula,
+        discharge,
         Justification::SubproofConclusion {
             technique: ProofTechnique::IndirectProof,
             subproof_start: assumption_pos,
