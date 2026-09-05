@@ -1,6 +1,7 @@
 use logic_core::models::rules::ProofTechnique;
-use logic_core::models::{Justification, Proof};
-use logic_core::services::{plant, PlantedCandidate, PlantSpec};
+use logic_core::models::{Formula, Justification, Proof};
+use logic_core::services::truth_table::{is_tautology_dynamic, DynTruthTable};
+use logic_core::services::{golf_gate, plant, GateConfig, OptimalConfig, PlantedCandidate, PlantSpec};
 
 fn small_spec() -> PlantSpec {
     PlantSpec {
@@ -667,4 +668,214 @@ fn plant_is_deterministic_across_many_subproof_seeds() {
         }
     }
     assert!(checked > 0, "no seeds under subproofs:2 produced a candidate to check");
+}
+
+// ─── Ruling F / Task 13: semantic gate + zero accessible duplicate lines ───
+
+/// Per-band `PlantSpec`, copying propbench's `spec_for_band`
+/// (`propbench/src/golf.rs`) shipped constants verbatim — these are the
+/// pre-costume par windows the real frozen set was generated at.
+fn spec_for_band(band: u8) -> PlantSpec {
+    let (par_min, par_max) = match band {
+        1 => (7, 11),
+        2 => (14, 19),
+        3 => (19, 26),
+        other => panic!("band must be 1..=3, got {other}"),
+    };
+    PlantSpec {
+        atoms: 4,
+        par_min,
+        par_max,
+        max_premises: 5,
+        max_formula_len: 90,
+        subproofs: 1,
+        obfuscation_passes: 2,
+    }
+}
+
+/// The shared-atom-universe union of every formula's own atoms — needed
+/// before separately-evaluated `DynTruthTable`s can be compared/combined
+/// (each formula's own `atoms()` alone isn't enough: two formulas over
+/// different atom sets would otherwise get bit position 0 meaning a
+/// different variable in each).
+fn atoms_of_all(formulas: &[Formula]) -> Vec<String> {
+    let mut atoms: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for f in formulas {
+        atoms.extend(f.atoms());
+    }
+    atoms.into_iter().collect()
+}
+
+fn table_over(f: &Formula, index: &std::collections::HashMap<&str, u8>, num_vars: u8) -> DynTruthTable {
+    match f {
+        Formula::Atom(name) => match index.get(name.as_str()) {
+            Some(&i) => DynTruthTable::new_var(i, num_vars),
+            None => DynTruthTable::tautology(num_vars),
+        },
+        Formula::Not(inner) => table_over(inner, index, num_vars).not(),
+        Formula::And(l, r) => table_over(l, index, num_vars).and(&table_over(r, index, num_vars)),
+        Formula::Or(l, r) => table_over(l, index, num_vars).or(&table_over(r, index, num_vars)),
+        Formula::Implies(l, r) => table_over(l, index, num_vars).implies(&table_over(r, index, num_vars)),
+        Formula::Biconditional(l, r) => {
+            table_over(l, index, num_vars).biconditional(&table_over(r, index, num_vars))
+        }
+        Formula::Contradiction => DynTruthTable::contradiction(num_vars),
+    }
+}
+
+/// Self-contained joint-satisfiability check — mirrors, but does not call,
+/// logic-core's own `services::cheese::is_satisfiable_dynamic`, so this
+/// test file compiles and runs unmodified against both pre-fix (b098f65,
+/// where no such crate function exists yet) and post-fix code, giving an
+/// apples-to-apples RED-then-GREEN comparison (see task-13-report.md for
+/// the pre-fix run).
+fn premises_satisfiable(premises: &[Formula]) -> bool {
+    if premises.is_empty() {
+        return true;
+    }
+    let atoms = atoms_of_all(premises);
+    let num_vars = atoms.len().max(1) as u8;
+    let index: std::collections::HashMap<&str, u8> =
+        atoms.iter().enumerate().map(|(i, a)| (a.as_str(), i as u8)).collect();
+    let combined = premises
+        .iter()
+        .fold(DynTruthTable::tautology(num_vars), |acc, f| acc.and(&table_over(f, &index, num_vars)));
+    !combined.is_contradiction()
+}
+
+/// Ruling F / Critical 1 (Task 13): every candidate `golf_gate` accepts must
+/// have jointly satisfiable premises and a non-tautologous conclusion —
+/// otherwise any conclusion follows by a short indirect proof (inconsistent
+/// premises), or the "theorem" is provable premise-free (tautologous
+/// conclusion), neither being a real theorem regardless of its cone's par.
+///
+/// A cut-down `probe` budget, not `GateConfig::default()`'s: satisfiability
+/// and tautology-ness don't depend on how hard the lawyer searches, only on
+/// the semantic stage (stage 2, unconditional — `Ok(())` is impossible
+/// without passing it), so a weaker probe is just as strong a check of
+/// THIS invariant, and it's also self-reinforcing on test speed — a weaker
+/// probe accepts MORE candidates, reaching 30 accepts/band faster. This
+/// matters a lot in practice: a companion measurement doc
+/// (`docs/superpowers/plans/2026-08-24-proof-golf-MEASUREMENTS.md`, Task 8)
+/// recorded ~60s of exhaustive search per accept at `OptimalConfig::default()`
+/// (200k nodes) for band 1 alone in RELEASE mode — 30 accepts at that budget
+/// would blow this file's "<2 min debug" time budget by orders of magnitude.
+/// Freeze stays off entirely for the same reason (freeze-accepts are a
+/// subset of probe-accepts anyway, so this is the stronger check regardless).
+///
+/// MUST FAIL against b098f65 (the review measured 43-52% plant-level
+/// incidence, ungated; existing gates remove most tautologies but few
+/// inconsistencies) — see task-13-report.md for the recorded pre-fix count.
+///
+/// Per-band accept target, not a flat 30: band 3's `plant()` itself
+/// succeeds (lands in-band at all) for only ~1% of seeds — a pre-existing,
+/// inherent cost of that band's wide/high par window, unrelated to this
+/// fix — so 30 confirmed gate-accepts for band 3 alone would need tens of
+/// thousands of seeds. `accept_target`/`seed_cap`/`cheese_max_distance`
+/// below were picked empirically (see task-13-report.md) so all three
+/// bands together still fit comfortably under this file's "<2 min debug"
+/// budget; 8 independent accepts is still a meaningful sample against the
+/// review's 43-52% pre-fix incidence rate (a single-digit-percent true
+/// incidence would need to be very lucky to hide across 8+20+20 = 48
+/// independent draws).
+#[test]
+fn accepted_candidates_are_semantically_sound() {
+    let cheap_probe_cfg = GateConfig {
+        cheese_max_distance: 1,
+        probe: OptimalConfig { max_lines: 4, max_nodes: 500, equiv_moves_per_state: 8 },
+        ..GateConfig::default()
+    };
+    let mut violations: Vec<String> = Vec::new();
+    let mut total_accepts = 0usize;
+    for band in 1..=3u8 {
+        let spec = spec_for_band(band);
+        let (accept_target, seed_cap) = if band == 3 { (8, 20_000) } else { (20, 8_000) };
+        let mut accepts = 0usize;
+        let mut seed = 0u64;
+        while accepts < accept_target && seed < seed_cap {
+            if let Ok(c) = plant(&spec, seed) {
+                if golf_gate(&c, &cheap_probe_cfg).is_ok() {
+                    accepts += 1;
+                    total_accepts += 1;
+                    if !premises_satisfiable(&c.theorem.premises) {
+                        violations.push(format!(
+                            "band {band} seed {seed}: inconsistent premises {:?}",
+                            c.theorem.premises
+                        ));
+                    }
+                    if is_tautology_dynamic(&c.theorem.conclusion) {
+                        violations.push(format!(
+                            "band {band} seed {seed}: tautologous conclusion {:?}",
+                            c.theorem.conclusion
+                        ));
+                    }
+                }
+            }
+            seed += 1;
+        }
+        assert!(accepts >= accept_target, "band {band}: only collected {accepts} accepts within the seed budget");
+    }
+    assert!(
+        violations.is_empty(),
+        "{} semantic violation(s) across {total_accepts} accepts:\n{}",
+        violations.len(),
+        violations.join("\n")
+    );
+}
+
+/// Ruling F / Important 3 (Task 13): no derived line's formula may
+/// byte-equal an earlier line accessible at that position (premises count
+/// as accessible). Subsumes `no_duplicate_discharge` above (checks EVERY
+/// derived line, not just discharges) — kept per the brief rather than
+/// removed, since it's still valid, narrower coverage.
+///
+/// MUST FAIL against b098f65 (review: 9.5% / 12.3% / 17.8% incidence for
+/// bands 1/2/3) — see task-13-report.md for the recorded pre-fix count.
+///
+/// 1000 seeds/band, not `no_duplicate_discharge`'s 2000: band 3's growth is
+/// markedly more expensive per seed (see `accepted_candidates_are_semantically_sound`'s
+/// doc comment), and "a few thousand seeds" across all three bands combined
+/// (3000 total) still meets the brief's own phrasing while fitting this
+/// file's "<2 min debug" budget.
+#[test]
+fn no_accessible_duplicate_lines() {
+    let mut checked = 0usize;
+    let mut violations: Vec<String> = Vec::new();
+    for band in 1..=3u8 {
+        let spec = spec_for_band(band);
+        for seed in 0..1000u64 {
+            if let Ok(c) = plant(&spec, seed) {
+                checked += 1;
+                for line in &c.proof.lines {
+                    if matches!(line.justification, Justification::Premise) {
+                        continue;
+                    }
+                    let matches: Vec<usize> = c
+                        .proof
+                        .lines
+                        .iter()
+                        .filter(|earlier| {
+                            earlier.line_number < line.line_number
+                                && earlier.formula == line.formula
+                                && c.proof.is_line_accessible(line.line_number, earlier.line_number)
+                        })
+                        .map(|earlier| earlier.line_number)
+                        .collect();
+                    if !matches.is_empty() {
+                        violations.push(format!(
+                            "band {band} seed {seed}: line {} duplicates accessible line(s) {matches:?}",
+                            line.line_number
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 0, "no seeds produced a candidate to check");
+    assert!(
+        violations.is_empty(),
+        "{} duplicate line(s) found across {checked} accepted candidates:\n{}",
+        violations.len(),
+        violations.join("\n")
+    );
 }

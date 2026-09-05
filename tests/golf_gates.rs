@@ -28,6 +28,29 @@ fn hand_built(premises: Vec<Formula>, conclusion: Formula, lines: Vec<(Formula, 
 }
 
 #[test]
+fn gate_rejects_inconsistent_premises() {
+    // "P" and "~P" are jointly unsatisfiable (any conclusion follows by a
+    // short indirect proof); the semantic gate must catch this before ever
+    // reaching cheese/greedy/probe, regardless of what the conclusion is.
+    let premises = vec![f("P"), f("~P")];
+    let conclusion = f("Q");
+    let c = hand_built(premises, conclusion, vec![]);
+
+    assert_eq!(golf_gate(&c, &GateConfig::default()), Err(GateReject::InconsistentPremises));
+}
+
+#[test]
+fn gate_rejects_tautologous_conclusion() {
+    // "P v ~P" is a tautology, provable premise-free — the (here,
+    // consistent and unrelated) premise is decoration.
+    let premises = vec![f("Q")];
+    let conclusion = f("P v ~P");
+    let c = hand_built(premises, conclusion, vec![]);
+
+    assert_eq!(golf_gate(&c, &GateConfig::default()), Err(GateReject::TautologousConclusion));
+}
+
+#[test]
 fn mp_only_two_liner_is_greedy_provable() {
     // P, P>Q, Q>R |- R via two Modus Ponens steps: exactly the grind a
     // diligent-but-strategically-blind philosopher solves unaided.
@@ -49,33 +72,41 @@ fn mp_only_two_liner_is_greedy_provable() {
 }
 
 #[test]
-fn tautologous_disjunct_conclusion_is_cheese() {
+fn tautologous_disjunct_conclusion_is_caught_by_semantic_gate() {
     // "P > P" is independently a tautology, so the whole disjunction is
     // provable via Add without ever touching "Q" — decoration, not content.
+    // `cheese_check` (see cheese.rs's own `round10_has_tautologous_disjunct`
+    // unit test) still correctly flags this as a tautologous disjunct, but
+    // as of the Ruling F semantic gate (Task 13), `golf_gate` never gets
+    // there for this input: ANY disjunct that's independently a tautology
+    // makes the WHOLE containing disjunction a tautology too (`Q v true` is
+    // `true` regardless of `Q`), so the semantic gate's whole-conclusion
+    // tautology check — which runs before cheese — always fires first. This
+    // is expected: `GateReject::Cheese`'s tautologous-disjunct case is now
+    // unreachable via `golf_gate` (cheese.rs's own tests still exercise
+    // `cheese_check` directly; `serve_filter.rs`'s separate, untouched path
+    // still uses it too).
     let conclusion = f("Q v (P > P)");
     let c = hand_built(vec![], conclusion, vec![]);
 
-    match golf_gate(&c, &GateConfig::default()) {
-        Err(GateReject::Cheese(msg)) => {
-            assert!(msg.contains("tautologous disjunct"), "unexpected message: {msg}");
-        }
-        other => panic!("expected Cheese(tautologous disjunct), got {other:?}"),
-    }
+    assert_eq!(golf_gate(&c, &GateConfig::default()), Err(GateReject::TautologousConclusion));
 }
 
 #[test]
-fn disguised_identity_conclusion_is_cheese() {
+fn disguised_identity_conclusion_is_caught_by_semantic_gate() {
     // "(P . Q) > (Q . P)": the antecedent rewrites to the consequent in one
-    // Commutation step — "prove A > B" is secretly "restate A".
+    // Commutation step — "prove A > B" is secretly "restate A". Same story
+    // as the tautologous-disjunct test above: disguised identity is only
+    // ever defined for an antecedent semantically EQUIVALENT to the
+    // consequent, and `A > B` for equivalent `A`/`B` is unconditionally a
+    // tautology (true when both are true, vacuously true when both are
+    // false) — so the Ruling F semantic gate always preempts cheese here
+    // too. `cheese_check` itself is unaffected (see cheese.rs's own
+    // `round11_is_identity_at_distance_2`).
     let conclusion = f("(P . Q) > (Q . P)");
     let c = hand_built(vec![], conclusion, vec![]);
 
-    match golf_gate(&c, &GateConfig::default()) {
-        Err(GateReject::Cheese(msg)) => {
-            assert!(msg.contains("disguised identity"), "unexpected message: {msg}");
-        }
-        other => panic!("expected Cheese(disguised identity), got {other:?}"),
-    }
+    assert_eq!(golf_gate(&c, &GateConfig::default()), Err(GateReject::TautologousConclusion));
 }
 
 #[test]

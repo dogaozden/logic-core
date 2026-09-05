@@ -13,9 +13,10 @@ use rand::{Rng, SeedableRng};
 
 use crate::models::{Difficulty, Formula, Justification, Proof, Theorem};
 use crate::models::rules::{EquivalenceRule, InferenceRule, ProofTechnique};
-use crate::services::cheese::cheese_check;
+use crate::services::cheese::{cheese_check, is_satisfiable_dynamic};
 use crate::services::obfuscate_gen::build_atom_pool;
 use crate::services::prover::{greedy_prove, optimal_prove, OptimalConfig, OptimalOutcome};
+use crate::services::truth_table::is_tautology_dynamic;
 use crate::services::verifier::ProofVerifier;
 
 /// Low weight given to equivalence steps vs. inference steps during growth.
@@ -265,13 +266,27 @@ pub fn plant(spec: &PlantSpec, seed: u64) -> Result<PlantedCandidate, PlantError
 
 /// Sample 2..=max_premises small, distinct premise formulas (literals,
 /// negated literals, or a binary connective of two literals — depth <= 2).
+///
+/// Yield optimization (Ruling F / Critical 1): a candidate is also rejected
+/// when adding it would make the premise set-so-far jointly unsatisfiable
+/// (e.g. `P` alongside `~P`, or `Q v Q` alongside `~Q`) — a truth-table
+/// check on the raw, pre-costume premises. This doesn't change what the
+/// gate ultimately guarantees (`golf_gate`'s semantic stage still checks
+/// the final, possibly-costumed theorem — costume preserves equivalence,
+/// so satisfiability of the raw premises is preserved too), it just stops
+/// growth from wasting a whole seed on a premise set that gate would reject
+/// anyway.
 fn sample_premises(rng: &mut StdRng, atoms: &[String], spec: &PlantSpec) -> Vec<Formula> {
     let n = rng.gen_range(2..=spec.max_premises);
     let mut premises: Vec<Formula> = Vec::with_capacity(n);
     while premises.len() < n {
         let candidate = sample_small_formula(rng, atoms);
-        if !premises.contains(&candidate) {
-            premises.push(candidate);
+        if premises.contains(&candidate) {
+            continue;
+        }
+        premises.push(candidate);
+        if !is_satisfiable_dynamic(&premises) {
+            premises.pop();
         }
     }
     premises
@@ -310,13 +325,15 @@ fn is_duplicate(scratch: &[(Formula, Justification)], formula: &Formula) -> bool
 }
 
 /// Whether `formula` is byte-equal (`Formula` equality, `==`) to the formula
-/// at some position in `pool` — used by `grow_cp_subproof`/`grow_ip_subproof`
-/// to reject a subproof whose discharge merely reproduces a formula that was
-/// already accessible before the scope opened (Ruling A, Task 8b's
-/// duplicate-discharge rejection; unconditional for both CP and IP as of
-/// Ruling E, Task 8c — see `grow_ip_subproof`'s doc comment), rather than
-/// contributing something the outer pool didn't already have.
-fn discharge_duplicates_outer_pool(scratch: &[(Formula, Justification)], pool: &[usize], formula: &Formula) -> bool {
+/// at some position in `pool`. Originally named for its one use (rejecting
+/// a subproof whose DISCHARGE merely reproduces a formula already
+/// accessible before the scope opened — Ruling A, Task 8b; unconditional
+/// for both CP and IP as of Ruling E, Task 8c, see `grow_ip_subproof`'s doc
+/// comment); as of Ruling F (Task 13, Important 3 mechanism (iv)) also used
+/// to reject a subproof's freshly-sampled ASSUMPTION on the same grounds —
+/// an assumption that merely reproduces an already-accessible formula is
+/// just as much a free re-citation shave as a discharge that does.
+fn formula_duplicates_pool(scratch: &[(Formula, Justification)], pool: &[usize], formula: &Formula) -> bool {
     pool.iter().any(|&p| scratch[p - 1].0 == *formula)
 }
 
@@ -623,27 +640,44 @@ fn admissible_rewrite_steps(
 ///
 /// Requires `passes >= 1` (guaranteed by `apply_costume_pass`'s caller,
 /// which only invokes this path when `spec.obfuscation_passes > 0`).
+///
+/// Returns the whole-formula stage this call passed through, in order,
+/// starting with `f` itself and ending with the returned formula (so the
+/// caller can fold every stage — not just the final one — into a later
+/// slot's `avoid` list; see `apply_costume_pass`'s mechanism-(i) fix).
+///
+/// No costume undo (Important 3, mechanism (ii)): each pass's `avoid` list
+/// is the caller-supplied `avoid` plus every whole-formula stage this same
+/// call has already produced (starting with `f`), so a later pass can
+/// never rewrite back to the original formula or to any stage already
+/// passed through — `admissible_rewrite_steps` already rejects any
+/// candidate landing in `avoid`, this just grows that list across passes
+/// instead of holding it fixed.
 fn obfuscate_with_trace(
     f: &Formula,
     passes: u8,
     rng: &mut StdRng,
     spec: &PlantSpec,
     avoid: &[Formula],
-) -> (Formula, Vec<RewriteStep>) {
+) -> (Formula, Vec<RewriteStep>, Vec<Formula>) {
     let n_passes = rng.gen_range(1..=passes);
     let mut current = f.clone();
     let mut trace = Vec::new();
+    let mut own_stages: Vec<Formula> = vec![f.clone()];
     for _ in 0..n_passes {
-        let candidates = admissible_rewrite_steps(&current, spec, avoid);
+        let mut local_avoid = avoid.to_vec();
+        local_avoid.extend(own_stages.iter().cloned());
+        let candidates = admissible_rewrite_steps(&current, spec, &local_avoid);
         if candidates.is_empty() {
             continue;
         }
         let chosen = rng.gen_range(0..candidates.len());
         let (step, next) = candidates.into_iter().nth(chosen).expect("chosen index is in bounds");
+        own_stages.push(next.clone());
         trace.push(step);
         current = next;
     }
-    (current, trace)
+    (current, trace, own_stages)
 }
 
 /// One growth attempt at the current scope depth: with room to open a new
@@ -735,10 +769,15 @@ fn restore(
 /// Plant a Conditional Proof subproof: assume `A`, grow 2–5 inner steps
 /// (which may cite outer lines and `A`, and — when nesting room remains — a
 /// subproof of their own), then discharge `A > X` where `X` is the last
-/// inner line's formula. Aborts (rolling back to exactly the pre-call state)
-/// if fewer than 2 inner steps can be grown within budget, or if the
-/// discharge formula duplicates a formula already accessible before the
-/// scope opened (Ruling A, Task 8b — see `discharge_duplicates_outer_pool`)
+/// inner line's formula. Rejects up front (no mutation yet, so a plain
+/// `false` return suffices) if the assumption itself duplicates a formula
+/// already accessible before the scope opens (Ruling F, Task 13, Important
+/// 3 mechanism (iv) — an assumption that merely re-derives an existing
+/// accessible formula is a free re-citation shave, exactly like a discharge
+/// that does, see `formula_duplicates_pool`) or is too long. Aborts
+/// (rolling back to exactly the pre-call state) if fewer than 2 inner steps
+/// can be grown within budget, or if the discharge formula duplicates a
+/// formula already accessible before the scope opened (Ruling A, Task 8b)
 /// or is too long.
 fn grow_cp_subproof(
     scratch: &mut Vec<(Formula, Justification)>,
@@ -753,8 +792,12 @@ fn grow_cp_subproof(
         return false;
     }
 
-    let cp = checkpoint(scratch, consumed);
     let outer_pool = accessible_positions(scopes, scratch.len());
+    if formula_duplicates_pool(scratch, &outer_pool, &assumption) {
+        return false;
+    }
+
+    let cp = checkpoint(scratch, consumed);
     let assumption_pos = scratch.len() + 1;
     scopes.open(assumption_pos);
     scratch.push((assumption.clone(), Justification::Assumption { technique: ProofTechnique::ConditionalProof }));
@@ -780,7 +823,7 @@ fn grow_cp_subproof(
     let last_inner_formula = scratch[last_inner_pos - 1].0.clone();
     let conclusion = Formula::Implies(Box::new(assumption), Box::new(last_inner_formula));
 
-    if discharge_duplicates_outer_pool(scratch, &outer_pool, &conclusion) || !within_len(&conclusion, spec) {
+    if formula_duplicates_pool(scratch, &outer_pool, &conclusion) || !within_len(&conclusion, spec) {
         restore(cp, scratch, consumed, scopes);
         return false;
     }
@@ -848,8 +891,21 @@ fn disj_neg_elim_template(a: &Formula, b: Formula) -> (EquivalenceRule, Formula,
 /// formula or a `G` that collides with the outer pool (frozen as `eligible`,
 /// computed before the scope opens — Task 8b's "open-time-frozen pool") can
 /// be rejected by simply not committing anything, no checkpoint/rollback
-/// needed (contrast `grow_cp_subproof`, whose discharge is only known after
-/// inner growth completes).
+/// needed for those checks (contrast `grow_cp_subproof`, whose discharge is
+/// only known after inner growth completes).
+///
+/// A checkpoint IS taken before the scope opens, though (Important 3,
+/// mechanism (iii)): the fixed derivation's contradiction line is always
+/// `Formula::Contradiction` — one canonical value, so ANY two accessible
+/// occurrences of it are automatically byte-equal — and unlike every other
+/// push in this function, that one previously committed with no duplicate
+/// check at all. Optional filler growth (below) runs inside this same
+/// still-open scope and can itself derive `Formula::Contradiction` first
+/// (via ordinary `try_inference_step`, which already checks `is_duplicate`
+/// before committing); when that happens, the fixed derivation's own
+/// contradiction push would create a second, mutually accessible occurrence
+/// — a free re-citation shave — so it's rejected and the whole attempt
+/// rolled back instead.
 fn grow_ip_subproof(
     scratch: &mut Vec<(Formula, Justification)>,
     consumed: &mut Vec<usize>,
@@ -877,11 +933,13 @@ fn grow_ip_subproof(
         || !within_len(&step_a, spec)
         || !within_len(&step_b, spec)
         || !within_len(&discharge, spec)
-        || discharge_duplicates_outer_pool(scratch, &eligible, &discharge)
+        || formula_duplicates_pool(scratch, &eligible, &assumption)
+        || formula_duplicates_pool(scratch, &eligible, &discharge)
     {
         return false;
     }
 
+    let cp = checkpoint(scratch, consumed);
     let assumption_pos = scratch.len() + 1;
     scopes.open(assumption_pos);
     scratch.push((assumption, Justification::Assumption { technique: ProofTechnique::IndirectProof }));
@@ -915,6 +973,13 @@ fn grow_ip_subproof(
     ));
     consumed.push(0);
     let step_b_pos = scratch.len();
+
+    // Same duplicate-line check ordinary growth steps already apply
+    // (Important 3, mechanism (iii)) — see this function's doc comment.
+    if is_duplicate(scratch, &Formula::Contradiction) {
+        restore(cp, scratch, consumed, scopes);
+        return false;
+    }
 
     consumed[seed_pos - 1] += 1;
     consumed[step_b_pos - 1] += 1;
@@ -1078,29 +1143,43 @@ fn rebuild_proof(
 fn apply_costume_pass(theorem: &Theorem, proof: &Proof, spec: &PlantSpec, rng: &mut StdRng) -> (Theorem, Proof) {
     let n_premises = theorem.premises.len();
 
-    // Costume premises left to right. Each one's avoid-list is every OTHER
-    // slot's formula as currently known: already-costumed premises
-    // contribute their final obfuscated form, not-yet-processed premises
-    // and the conclusion contribute their original form (obfuscating a
-    // premise into colliding with any of these is degenerate — see
-    // `admissible_rewrite_steps`).
+    // Every derived (post-premise) line of the ORIGINAL, un-costumed proof —
+    // these persist unchanged into the costumed proof's body, so no
+    // premise/conclusion costume rewrite may ever land on one of them
+    // (Important 3, mechanism (i)): previously `avoid` only ever compared
+    // against other theorem slots, never the body, so a prologue/epilogue
+    // stage could silently collide with a body line.
+    let body_lines: Vec<Formula> = proof.lines[n_premises..].iter().map(|l| l.formula.clone()).collect();
+
+    // Costume premises left to right. Each one's avoid-list is: every
+    // not-yet-processed premise's original form, the conclusion's original
+    // form, EVERY stage (not just the final one) that every already-
+    // processed premise's own costume passed through — a later premise's
+    // rewrite landing on an earlier premise's intermediate stage is just as
+    // much a collision as landing on its final form — and every body line.
     let mut final_premises: Vec<Formula> = Vec::with_capacity(n_premises);
     let mut premise_traces: Vec<Vec<RewriteStep>> = Vec::with_capacity(n_premises);
+    let mut produced_stages: Vec<Formula> = Vec::new();
     for i in 0..n_premises {
-        let avoid: Vec<Formula> = (0..n_premises)
-            .filter(|&j| j != i)
-            .map(|j| final_premises.get(j).cloned().unwrap_or_else(|| theorem.premises[j].clone()))
+        let avoid: Vec<Formula> = (i + 1..n_premises)
+            .map(|j| theorem.premises[j].clone())
             .chain(std::iter::once(theorem.conclusion.clone()))
+            .chain(produced_stages.iter().cloned())
+            .chain(body_lines.iter().cloned())
             .collect();
-        let (p_prime, trace) =
+        let (p_prime, trace, own_stages) =
             obfuscate_with_trace(&theorem.premises[i], spec.obfuscation_passes, rng, spec, &avoid);
+        produced_stages.extend(own_stages);
         final_premises.push(p_prime);
         premise_traces.push(trace);
     }
 
-    // Conclusion, avoiding collision with every (now fully finalized) premise.
-    let (conclusion_prime, trace_c) =
-        obfuscate_with_trace(&theorem.conclusion, spec.obfuscation_passes, rng, spec, &final_premises);
+    // Conclusion: avoid every premise's full trace (every stage, not just
+    // final) plus every body line.
+    let avoid_conclusion: Vec<Formula> =
+        produced_stages.iter().cloned().chain(body_lines.iter().cloned()).collect();
+    let (conclusion_prime, trace_c, _) =
+        obfuscate_with_trace(&theorem.conclusion, spec.obfuscation_passes, rng, spec, &avoid_conclusion);
 
     let new_theorem = Theorem::new(
         final_premises.clone(),
@@ -1210,10 +1289,11 @@ pub struct GateConfig {
     /// `OptimalConfig::default()`).
     pub probe: OptimalConfig,
     /// Optional stricter lawyer budget for finalists only. `None` (the
-    /// default) skips this stage entirely — probe-only gating. The
-    /// canonical freeze config (`max_lines: c.par, max_nodes: 5_000_000,
-    /// equiv_moves_per_state: 256`) is the caller's to construct; this
-    /// stage just runs whatever it's handed.
+    /// default) skips this stage entirely — probe-only gating. The ruled
+    /// freeze budget is `max_lines: c.par, max_nodes: 1_000_000,
+    /// equiv_moves_per_state: 128` (Ruling B); the canonical config lives in
+    /// propbench (`golf.rs`'s freeze-branch construction), not here — this
+    /// stage just runs whatever `GateConfig` it's handed.
     pub freeze: Option<OptimalConfig>,
 }
 
@@ -1235,6 +1315,13 @@ impl Default for GateConfig {
 pub enum GateReject {
     /// A premise or the conclusion exceeds `cfg.max_formula_len`.
     TooBig,
+    /// No assignment satisfies every premise (Ruling F / Critical 1): the
+    /// premise set is jointly unsatisfiable, so any conclusion follows by a
+    /// short indirect proof — vacuous truth, not a real theorem.
+    InconsistentPremises,
+    /// No assignment falsifies the conclusion (Ruling F / Critical 1): it's
+    /// a tautology, provable premise-free.
+    TautologousConclusion,
     /// Vetoed by `cheese_check` (tautologous disjunct, subformula decoy, or
     /// disguised identity); the string names which one and its detail.
     Cheese(String),
@@ -1244,6 +1331,13 @@ pub enum GateReject {
     LawyerProbeCracked { lines: usize },
     /// The bounded-optimal lawyer cracked it at freeze (finalist) budgets.
     LawyerFreezeCracked { lines: usize },
+    /// A HARD backstop (Ruling F / Important 3), independent of whatever
+    /// the growth-time fixes elsewhere in this file did or didn't catch: a
+    /// derived line's formula byte-equals an earlier line accessible at
+    /// that position (same scope or any enclosing open scope; premises
+    /// count as accessible — exactly `Proof::is_line_accessible`'s rule,
+    /// the same one the verifier enforces) — a free re-citation shave.
+    DuplicateLine { line: usize, duplicates: usize },
 }
 
 /// Reject-filter deciding whether `c` is benchmark-worthy: size → cheese →
@@ -1261,7 +1355,20 @@ pub fn golf_gate(c: &PlantedCandidate, cfg: &GateConfig) -> Result<(), GateRejec
         return Err(GateReject::TooBig);
     }
 
-    // 2. Cheese: cheap syntactic/truth-table checks. Field precedence
+    // 2. Semantic (Ruling F / Critical 1): one truth-table sweep each,
+    // atoms <= 6 so <= 64 rows — cheaper than cheese. Premises checked
+    // first (binding order). Strict-subset-entailment (some proper subset
+    // of the premises already entails the conclusion) is deliberately NOT
+    // checked here — controller ruling: an unused premise shortens no
+    // proof; it's measured, not gated, in the harness that calls this.
+    if !is_satisfiable_dynamic(&c.theorem.premises) {
+        return Err(GateReject::InconsistentPremises);
+    }
+    if is_tautology_dynamic(&c.theorem.conclusion) {
+        return Err(GateReject::TautologousConclusion);
+    }
+
+    // 3. Cheese: cheap syntactic/truth-table checks. Field precedence
     // mirrors `serve_filter::analyze_for_serving`'s ordering of the same
     // three `CheeseReport` fields.
     let cheese = cheese_check(&c.theorem.premises, &c.theorem.conclusion, cfg.cheese_max_distance);
@@ -1278,13 +1385,13 @@ pub fn golf_gate(c: &PlantedCandidate, cfg: &GateConfig) -> Result<(), GateRejec
         return Err(GateReject::Cheese(format!("disguised identity at distance {distance}")));
     }
 
-    // 3. Greedy: the philosopher must fail to prove it unaided.
+    // 4. Greedy: the philosopher must fail to prove it unaided.
     let greedy = greedy_prove(&c.theorem.premises, &c.theorem.conclusion, cfg.greedy_max_lines);
     if let Some(proof) = greedy.proof {
         return Err(GateReject::GreedyProvable { lines: proof.line_count });
     }
 
-    // 4. Lawyer probe: default-budget bounded-optimal search must not crack
+    // 5. Lawyer probe: default-budget bounded-optimal search must not crack
     // it. `Proved` in ANY form (certified minimal or not) is a reject;
     // `NotProvedWithinBounds`/`Exhausted` both pass.
     if let OptimalOutcome::Proved { proof, .. } =
@@ -1293,7 +1400,7 @@ pub fn golf_gate(c: &PlantedCandidate, cfg: &GateConfig) -> Result<(), GateRejec
         return Err(GateReject::LawyerProbeCracked { lines: proof.line_count });
     }
 
-    // 5. Lawyer freeze: finalists only, caller-configured budget.
+    // 6. Lawyer freeze: finalists only, caller-configured budget.
     if let Some(freeze_cfg) = &cfg.freeze {
         if let OptimalOutcome::Proved { proof, .. } =
             optimal_prove(&c.theorem.premises, &c.theorem.conclusion, freeze_cfg)
@@ -1302,5 +1409,64 @@ pub fn golf_gate(c: &PlantedCandidate, cfg: &GateConfig) -> Result<(), GateRejec
         }
     }
 
+    // 7. Duplicate line (Ruling F / Important 3): a HARD backstop over the
+    // truly finished (post-costume) candidate, on the witness proof itself
+    // rather than the theorem — placed last since it's cheap enough that
+    // ordering doesn't matter for cost, and it's the definitive check on
+    // this specific defect regardless of what the growth-time fixes did.
+    // Premises count as accessible (they carry no scope, so
+    // `is_line_accessible` trivially clears them); a duplicate is checked
+    // against every STRICTLY EARLIER line, so the first occurrence of a
+    // formula never rejects itself.
+    for line in &c.proof.lines {
+        if matches!(line.justification, Justification::Premise) {
+            continue;
+        }
+        if let Some(earlier) = c.proof.lines.iter().find(|other| {
+            other.line_number < line.line_number
+                && other.formula == line.formula
+                && c.proof.is_line_accessible(line.line_number, other.line_number)
+        }) {
+            return Err(GateReject::DuplicateLine { line: line.line_number, duplicates: earlier.line_number });
+        }
+    }
+
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Unit test (Ruling F / Critical 1, Part 3): `sample_premises`'s yield
+    /// optimization must never hand back a jointly-unsatisfiable set —
+    /// checked directly against the private function, over enough seeds and
+    /// atom-pool sizes to exercise the rejection path repeatedly (not just
+    /// happen to never trigger it).
+    #[test]
+    fn sample_premises_never_unsatisfiable() {
+        let mut checked = 0usize;
+        for atom_count in 3..=6u8 {
+            let atoms = build_atom_pool(atom_count);
+            let spec = PlantSpec {
+                atoms: atom_count,
+                par_min: 6,
+                par_max: 12,
+                max_premises: 5,
+                max_formula_len: 90,
+                subproofs: 0,
+                obfuscation_passes: 0,
+            };
+            for seed in 0..500u64 {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let premises = sample_premises(&mut rng, &atoms, &spec);
+                checked += 1;
+                assert!(
+                    is_satisfiable_dynamic(&premises),
+                    "atoms={atom_count} seed {seed}: sample_premises produced an unsatisfiable set: {premises:?}"
+                );
+            }
+        }
+        assert!(checked > 0, "no seeds were checked");
+    }
 }

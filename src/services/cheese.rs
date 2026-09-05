@@ -103,6 +103,28 @@ fn are_equivalent_dynamic(a: &Formula, b: &Formula) -> bool {
     dyn_table_over(a, &index, num_vars).eq(&dyn_table_over(b, &index, num_vars))
 }
 
+/// Are `formulas` jointly satisfiable — does some assignment make every one
+/// of them true simultaneously? Empty input is vacuously satisfiable (the
+/// empty conjunction is a tautology). Reuses the same shared-atom-universe
+/// machinery as `entails_dynamic`/`are_equivalent_dynamic` above (see the
+/// module-level note on why a shared mapping matters once atom pools go
+/// past P-T) rather than a second evaluator — used by `golf_gate`'s
+/// semantic stage (`GateReject::InconsistentPremises`) and by
+/// `sample_premises`'s yield optimization (Ruling F, Task 13).
+pub fn is_satisfiable_dynamic(formulas: &[Formula]) -> bool {
+    if formulas.is_empty() {
+        return true;
+    }
+    let refs: Vec<&Formula> = formulas.iter().collect();
+    let atoms = atom_universe(&refs);
+    let num_vars = atoms.len().max(1) as u8;
+    let index: HashMap<&str, u8> = atoms.iter().enumerate().map(|(i, s)| (s.as_str(), i as u8)).collect();
+    let combined = formulas.iter().fold(DynTruthTable::tautology(num_vars), |acc, f| {
+        acc.and(&dyn_table_over(f, &index, num_vars))
+    });
+    !combined.is_contradiction()
+}
+
 /// Semantic entailment over the dynamic engine, safe for any atom names —
 /// see the module-level note on why the u32 fast path can't be used here.
 fn entails_dynamic(premises: &[Formula], conclusion: &Formula) -> bool {
