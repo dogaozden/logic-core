@@ -1,6 +1,6 @@
 [package]
 name = "logic-core"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 description = "Propositional logic proof engine: formulas, natural-deduction rules, verification, and theorem generation"
 license = "MIT"
