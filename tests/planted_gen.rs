@@ -749,78 +749,93 @@ fn premises_satisfiable(premises: &[Formula]) -> bool {
 /// premises), or the "theorem" is provable premise-free (tautologous
 /// conclusion), neither being a real theorem regardless of its cone's par.
 ///
-/// A cut-down `probe` budget, not `GateConfig::default()`'s: satisfiability
-/// and tautology-ness don't depend on how hard the lawyer searches, only on
-/// the semantic stage (stage 2, unconditional — `Ok(())` is impossible
-/// without passing it), so a weaker probe is just as strong a check of
-/// THIS invariant, and it's also self-reinforcing on test speed — a weaker
-/// probe accepts MORE candidates, reaching 30 accepts/band faster. This
-/// matters a lot in practice: a companion measurement doc
-/// (`docs/superpowers/plans/2026-08-24-proof-golf-MEASUREMENTS.md`, Task 8)
-/// recorded ~60s of exhaustive search per accept at `OptimalConfig::default()`
-/// (200k nodes) for band 1 alone in RELEASE mode — 30 accepts at that budget
-/// would blow this file's "<2 min debug" time budget by orders of magnitude.
-/// Freeze stays off entirely for the same reason (freeze-accepts are a
-/// subset of probe-accepts anyway, so this is the stronger check regardless).
+/// Probe effectively OFF, cheese and greedy at FULL default fidelity (team-
+/// lead ruling, Task 13 review response): the semantic property under test
+/// is guaranteed by stage 2 alone (unconditional — `Ok(())` is impossible
+/// without passing it), and the prover stages are both irrelevant to it and
+/// the dominant cost (a companion measurement doc,
+/// `docs/superpowers/plans/2026-08-24-proof-golf-MEASUREMENTS.md` Task 8,
+/// recorded ~60s of exhaustive RELEASE-mode search per accept at
+/// `OptimalConfig::default()`'s 200k nodes for band 1 alone). Rather than
+/// shrinking cheese/probe's budgets (which weakens what the test actually
+/// exercises), `probe_off()` below sets `max_lines: 0` — `optimal_prove`'s
+/// `for depth in 1..=cfg.max_lines` loop is then the empty range `1..=0`,
+/// so it returns `NotProvedWithinBounds` without ever calling `search` once:
+/// a true zero-cost no-op, not just a small budget. `freeze` stays `None`
+/// (already the default — that stage is skipped unconditionally already).
+fn probe_off_cfg() -> GateConfig {
+    GateConfig { probe: OptimalConfig { max_lines: 0, max_nodes: 0, equiv_moves_per_state: 0 }, ..GateConfig::default() }
+}
+
+/// Shared band-soundness check: collect `accept_target` accepts (or give up
+/// at `seed_cap`), asserting every one has satisfiable premises and a
+/// non-tautologous conclusion. Returns `(accepts_found, violations)` so
+/// callers can assert on both — used directly by three per-band `#[test]`s
+/// below (team-lead ruling: no single test should exceed ~90s debug, so
+/// bands are split rather than looped in one test) and, unmodified, by the
+/// pre-fix RED check recorded in task-13-report.md (isolated against
+/// b098f65 via `git stash`).
 ///
 /// MUST FAIL against b098f65 (the review measured 43-52% plant-level
 /// incidence, ungated; existing gates remove most tautologies but few
 /// inconsistencies) — see task-13-report.md for the recorded pre-fix count.
-///
-/// Per-band accept target, not a flat 30: band 3's `plant()` itself
-/// succeeds (lands in-band at all) for only ~1% of seeds — a pre-existing,
-/// inherent cost of that band's wide/high par window, unrelated to this
-/// fix — so 30 confirmed gate-accepts for band 3 alone would need tens of
-/// thousands of seeds. `accept_target`/`seed_cap`/`cheese_max_distance`
-/// below were picked empirically (see task-13-report.md) so all three
-/// bands together still fit comfortably under this file's "<2 min debug"
-/// budget; 8 independent accepts is still a meaningful sample against the
-/// review's 43-52% pre-fix incidence rate (a single-digit-percent true
-/// incidence would need to be very lucky to hide across 8+20+20 = 48
-/// independent draws).
-#[test]
-fn accepted_candidates_are_semantically_sound() {
-    let cheap_probe_cfg = GateConfig {
-        cheese_max_distance: 1,
-        probe: OptimalConfig { max_lines: 4, max_nodes: 500, equiv_moves_per_state: 8 },
-        ..GateConfig::default()
-    };
+fn check_band_semantically_sound(band: u8, accept_target: usize, seed_cap: u64) -> (usize, Vec<String>) {
+    let cfg = probe_off_cfg();
+    let spec = spec_for_band(band);
     let mut violations: Vec<String> = Vec::new();
-    let mut total_accepts = 0usize;
-    for band in 1..=3u8 {
-        let spec = spec_for_band(band);
-        let (accept_target, seed_cap) = if band == 3 { (8, 20_000) } else { (20, 8_000) };
-        let mut accepts = 0usize;
-        let mut seed = 0u64;
-        while accepts < accept_target && seed < seed_cap {
-            if let Ok(c) = plant(&spec, seed) {
-                if golf_gate(&c, &cheap_probe_cfg).is_ok() {
-                    accepts += 1;
-                    total_accepts += 1;
-                    if !premises_satisfiable(&c.theorem.premises) {
-                        violations.push(format!(
-                            "band {band} seed {seed}: inconsistent premises {:?}",
-                            c.theorem.premises
-                        ));
-                    }
-                    if is_tautology_dynamic(&c.theorem.conclusion) {
-                        violations.push(format!(
-                            "band {band} seed {seed}: tautologous conclusion {:?}",
-                            c.theorem.conclusion
-                        ));
-                    }
+    let mut accepts = 0usize;
+    let mut seed = 0u64;
+    while accepts < accept_target && seed < seed_cap {
+        if let Ok(c) = plant(&spec, seed) {
+            if golf_gate(&c, &cfg).is_ok() {
+                accepts += 1;
+                if !premises_satisfiable(&c.theorem.premises) {
+                    violations.push(format!("band {band} seed {seed}: inconsistent premises {:?}", c.theorem.premises));
+                }
+                if is_tautology_dynamic(&c.theorem.conclusion) {
+                    violations.push(format!("band {band} seed {seed}: tautologous conclusion {:?}", c.theorem.conclusion));
                 }
             }
-            seed += 1;
         }
-        assert!(accepts >= accept_target, "band {band}: only collected {accepts} accepts within the seed budget");
+        seed += 1;
     }
+    (accepts, violations)
+}
+
+fn assert_band_semantically_sound(band: u8, accept_target: usize, seed_cap: u64) {
+    let (accepts, violations) = check_band_semantically_sound(band, accept_target, seed_cap);
+    assert!(accepts >= accept_target, "band {band}: only collected {accepts} accepts within the seed budget");
     assert!(
         violations.is_empty(),
-        "{} semantic violation(s) across {total_accepts} accepts:\n{}",
+        "{} semantic violation(s) across {accepts} accepts:\n{}",
         violations.len(),
         violations.join("\n")
     );
+}
+
+#[test]
+fn accepted_candidates_are_semantically_sound_band1() {
+    assert_band_semantically_sound(1, 30, 8_000);
+}
+
+#[test]
+fn accepted_candidates_are_semantically_sound_band2() {
+    assert_band_semantically_sound(2, 30, 8_000);
+}
+
+/// Band 3's `plant()` succeeds (lands in-band at all) for only ~1% of
+/// seeds — a pre-existing, inherent cost of that band's wide/high par
+/// window, unrelated to this fix (confirmed: with probe effectively off,
+/// the remaining cost is almost entirely `plant()`'s own growth attempts,
+/// not gate-side prover search). 10 accepts (not bands 1/2's 30) per
+/// team-lead ruling, since 30 would need many tens of thousands of seeds;
+/// 10 independent accepts is still a meaningful sample against the
+/// review's 43-52% pre-fix incidence rate. NOT `#[ignore]`d: this reaches
+/// 10 accepts within budget comfortably under ~90s debug — see
+/// task-13-report.md for the measured wall time.
+#[test]
+fn accepted_candidates_are_semantically_sound_band3() {
+    assert_band_semantically_sound(3, 10, 200_000);
 }
 
 /// Ruling F / Important 3 (Task 13): no derived line's formula may
@@ -832,11 +847,12 @@ fn accepted_candidates_are_semantically_sound() {
 /// MUST FAIL against b098f65 (review: 9.5% / 12.3% / 17.8% incidence for
 /// bands 1/2/3) — see task-13-report.md for the recorded pre-fix count.
 ///
-/// 1000 seeds/band, not `no_duplicate_discharge`'s 2000: band 3's growth is
-/// markedly more expensive per seed (see `accepted_candidates_are_semantically_sound`'s
-/// doc comment), and "a few thousand seeds" across all three bands combined
-/// (3000 total) still meets the brief's own phrasing while fitting this
-/// file's "<2 min debug" budget.
+/// 1000 seeds/band, not `no_duplicate_discharge`'s 2000: band 3's `plant()`
+/// success rate is much lower than bands 1/2 (see
+/// `accepted_candidates_are_semantically_sound_band3`'s doc comment), and "a
+/// few thousand seeds" across all three bands combined (3000 total) still
+/// meets the brief's own phrasing while fitting this file's "<2 min debug"
+/// budget.
 #[test]
 fn no_accessible_duplicate_lines() {
     let mut checked = 0usize;
@@ -878,4 +894,64 @@ fn no_accessible_duplicate_lines() {
         violations.len(),
         violations.join("\n")
     );
+}
+
+/// Dedicated regression test for Important 3's fourth mechanism (Task 13,
+/// found empirically while verifying the review's three named mechanisms,
+/// not itself named in the review): `grow_cp_subproof`'s and
+/// `grow_ip_subproof`'s freshly-sampled ASSUMPTION formula was never checked
+/// against the outer accessible pool — only their DISCHARGE was
+/// (`formula_duplicates_pool`, née `discharge_duplicates_outer_pool`, was
+/// only ever called on the discharge). A trivially simple assumption (a bare
+/// atom) can coincidentally match an already-accessible line with zero
+/// growth needed, giving an instant free re-citation duplicate the moment
+/// the assumption is asserted.
+///
+/// First found via band 3's spec (subproofs 1, passes 2), seed 106: pre-fix,
+/// that seed produced a CP assumption (bare `S`) at line 10 that
+/// byte-duplicated line 3 (a costume-prologue line restoring premise `S.S`
+/// back to the body's `S`), and a SECOND CP subproof's assumption again
+/// duplicated the same line 3 at line 20 — confirmed via a direct proof dump
+/// (see task-13-report.md) before this fix landed. Seed 106 itself is NOT
+/// pinned here, deliberately: this same fix changes what seed 106 grows into
+/// (post-fix it lands `OutOfBand` instead), which is the fix working as
+/// intended, not a reason to keep chasing that exact seed. Scanning a seed
+/// range at the same spec instead keeps the regression check meaningful
+/// regardless of which specific seeds land in-band on any given version.
+/// Assertion is general (any assumption, not just the original line 10/20/3
+/// case), so it also guards the IP-assumption half of the same fix even
+/// though seed 106 only ever exercised CP.
+#[test]
+fn subproof_assumption_never_duplicates_outer_pool() {
+    let spec = spec_for_band(3);
+    let mut checked = 0usize;
+    let mut violations: Vec<String> = Vec::new();
+    for seed in 0..500u64 {
+        let Ok(c) = plant(&spec, seed) else { continue };
+        checked += 1;
+        for line in &c.proof.lines {
+            if !matches!(line.justification, Justification::Assumption { .. }) {
+                continue;
+            }
+            let matches: Vec<usize> = c
+                .proof
+                .lines
+                .iter()
+                .filter(|earlier| {
+                    earlier.line_number < line.line_number
+                        && earlier.formula == line.formula
+                        && c.proof.is_line_accessible(line.line_number, earlier.line_number)
+                })
+                .map(|earlier| earlier.line_number)
+                .collect();
+            if !matches.is_empty() {
+                violations.push(format!(
+                    "seed {seed}: assumption at line {} duplicates accessible line(s) {matches:?}: {:?}",
+                    line.line_number, line.formula
+                ));
+            }
+        }
+    }
+    assert!(checked > 0, "no seeds produced a candidate to check");
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
 }
