@@ -480,6 +480,34 @@ fn solutions() -> BTreeMap<&'static str, Vec<&'static str>> {
         "∃z(⟨a, z⟩ ∈ f . ⟨z, c⟩ ∈ g) :: ∃I 9",
         "⟨a, c⟩ ∈ h :: MP 8,10",
     ]);
+    m.insert("halmos-11-3", vec![
+        "CP> c ∈ a", "c ∈ a ∨ c ∈ {a} :: Add 1", "c ∈ a ∪ {a} :: Def 2", "<CP c ∈ a ⊃ c ∈ a ∪ {a}",
+        "∀x(x ∈ a ⊃ x ∈ a ∪ {a}) :: ∀I 4", "a ⊆ a ∪ {a} :: Def 5",
+    ]);
+    m.insert("halmos-11-4", vec![
+        "IP> ∅ = a ∪ {a}", "a = a :: =I", "a ∈ {a} :: Def 2", "a ∈ a ∨ a ∈ {a} :: Add 3", "a ∈ a ∪ {a} :: Def 4",
+        "a ∈ ∅ :: =E 1,5", "⊥ :: Def 6", "<IP ∅ ≠ a ∪ {a}",
+    ]);
+    // Chapter 12
+    m.insert("halmos-12-1", vec!["∅ ∈ s . ∀x(x ∈ s ⊃ x ∪ {x} ∈ s) :: Def 1", "∅ ∈ s :: Simp 2"]);
+    m.insert("halmos-12-2", vec![
+        "∅ ∈ s . ∀x(x ∈ s ⊃ x ∪ {x} ∈ s) :: Def 1", "∅ ∈ s :: Simp 3", "∀x(x ∈ s ⊃ x ∪ {x} ∈ s) :: Simp 3",
+        "c ∈ s ⊃ c ∪ {c} ∈ s :: ∀E 5", "c ∪ {c} ∈ s :: MP 6,2",
+    ]);
+    m.insert("halmos-12-3", vec![
+        "∅ ∈ s . ∀x(x ∈ s ⊃ x ∪ {x} ∈ s) :: Def 1", "∅ ∈ s :: Simp 2", "∀x(x ∈ s ⊃ x ∪ {x} ∈ s) :: Simp 2",
+        "∅ ∈ s ⊃ ∅ ∪ {∅} ∈ s :: ∀E 4", "∅ ∪ {∅} ∈ s :: MP 5,3",
+    ]);
+    m.insert("halmos-12-4", vec![
+        "∅ ∈ s . ∀x(x ∈ s ⊃ x ∪ {x} ∈ s) :: Def 1", "∅ ∈ t . ∀x(x ∈ t ⊃ x ∪ {x} ∈ t) :: Def 2",
+        "∅ ∈ s :: Simp 3", "∀x(x ∈ s ⊃ x ∪ {x} ∈ s) :: Simp 3", "∅ ∈ t :: Simp 4", "∀x(x ∈ t ⊃ x ∪ {x} ∈ t) :: Simp 4",
+        "∅ ∈ s . ∅ ∈ t :: Conj 5,7", "∅ ∈ s ∩ t :: Def 9",
+        "CP> c ∈ s ∩ t", "c ∈ s . c ∈ t :: Def 11", "c ∈ s :: Simp 12", "c ∈ t :: Simp 12",
+        "c ∈ s ⊃ c ∪ {c} ∈ s :: ∀E 6", "c ∪ {c} ∈ s :: MP 15,13", "c ∈ t ⊃ c ∪ {c} ∈ t :: ∀E 8",
+        "c ∪ {c} ∈ t :: MP 17,14", "c ∪ {c} ∈ s . c ∪ {c} ∈ t :: Conj 16,18", "c ∪ {c} ∈ s ∩ t :: Def 19",
+        "<CP c ∈ s ∩ t ⊃ c ∪ {c} ∈ s ∩ t", "∀x(x ∈ s ∩ t ⊃ x ∪ {x} ∈ s ∩ t) :: ∀I 21",
+        "∅ ∈ s ∩ t . ∀x(x ∈ s ∩ t ⊃ x ∪ {x} ∈ s ∩ t) :: Conj 10,22", "Ind(s ∩ t) :: Def 23",
+    ]);
     // Chapter 11
     m.insert("halmos-11-1", vec!["a = a :: =I", "a ∈ {a} :: Def 1", "a ∈ a ∨ a ∈ {a} :: Add 2", "a ∈ a ∪ {a} :: Def 3"]);
     m.insert("halmos-11-2", vec![

@@ -227,6 +227,20 @@ pub fn definition_unfoldings(f: &Formula) -> Vec<Formula> {
                 Box::new(every_x),
             ));
         }
+        Formula::Predicate(name, args) if name == "Ind" && args.len() == 1 => {
+            // Ind(s) :: ∅ ∈ s . ∀x(x ∈ s ⊃ x ∪ {x} ∈ s): s is inductive (Halmos §12)
+            let se = &args[0];
+            let mut used: std::collections::BTreeSet<String> = se.names();
+            let x = Term::Name(fresh_avoiding(&mut used));
+            let succ = Term::Union(Box::new(x.clone()), Box::new(Term::Singleton(Box::new(x.clone()))));
+            out.push(Formula::And(
+                Box::new(mem(&Term::Empty, se)),
+                Box::new(Formula::ForAll(
+                    x.display_string(),
+                    Box::new(Formula::Implies(Box::new(mem(&x, se)), Box::new(mem(&succ, se)))),
+                )),
+            ));
+        }
         Formula::Predicate(name, args) if name == "Rev" && args.len() == 2 => {
             // Rev(f, g) :: g is the inverse of f: ∀x∀y(⟨x, y⟩ ∈ f ≡ ⟨y, x⟩ ∈ g)
             let (fe, ge) = (&args[0], &args[1]);
