@@ -241,6 +241,45 @@ pub fn definition_unfoldings(f: &Formula) -> Vec<Formula> {
                 )),
             ));
         }
+        Formula::Predicate(name, args) if name == "Trans" && args.len() == 1 => {
+            // Trans(R) :: ∀x∀y∀z((⟨x, y⟩ ∈ R . ⟨y, z⟩ ∈ R) ⊃ ⟨x, z⟩ ∈ R)  (Halmos §16)
+            let re = &args[0];
+            let mut used: std::collections::BTreeSet<String> = re.names();
+            let x = Term::Name(fresh_avoiding(&mut used));
+            let y = Term::Name(fresh_avoiding(&mut used));
+            let z = Term::Name(fresh_avoiding(&mut used));
+            let xy = Term::OrderedPair(Box::new(x.clone()), Box::new(y.clone()));
+            let yz = Term::OrderedPair(Box::new(y.clone()), Box::new(z.clone()));
+            let xz = Term::OrderedPair(Box::new(x.clone()), Box::new(z.clone()));
+            let body = Formula::Implies(
+                Box::new(Formula::And(Box::new(mem(&xy, re)), Box::new(mem(&yz, re)))),
+                Box::new(mem(&xz, re)),
+            );
+            out.push(Formula::ForAll(
+                x.display_string(),
+                Box::new(Formula::ForAll(
+                    y.display_string(),
+                    Box::new(Formula::ForAll(z.display_string(), Box::new(body))),
+                )),
+            ));
+        }
+        Formula::Predicate(name, args) if name == "Antisym" && args.len() == 1 => {
+            // Antisym(R) :: ∀x∀y((⟨x, y⟩ ∈ R . ⟨y, x⟩ ∈ R) ⊃ x = y)  (Halmos §16)
+            let re = &args[0];
+            let mut used: std::collections::BTreeSet<String> = re.names();
+            let x = Term::Name(fresh_avoiding(&mut used));
+            let y = Term::Name(fresh_avoiding(&mut used));
+            let xy = Term::OrderedPair(Box::new(x.clone()), Box::new(y.clone()));
+            let yx = Term::OrderedPair(Box::new(y.clone()), Box::new(x.clone()));
+            let body = Formula::Implies(
+                Box::new(Formula::And(Box::new(mem(&xy, re)), Box::new(mem(&yx, re)))),
+                Box::new(Formula::Identity(x.clone(), y.clone())),
+            );
+            out.push(Formula::ForAll(
+                x.display_string(),
+                Box::new(Formula::ForAll(y.display_string(), Box::new(body))),
+            ));
+        }
         Formula::Predicate(name, args) if name == "Rev" && args.len() == 2 => {
             // Rev(f, g) :: g is the inverse of f: ∀x∀y(⟨x, y⟩ ∈ f ≡ ⟨y, x⟩ ∈ g)
             let (fe, ge) = (&args[0], &args[1]);

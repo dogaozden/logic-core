@@ -488,6 +488,45 @@ fn solutions() -> BTreeMap<&'static str, Vec<&'static str>> {
         "IP> ∅ = a ∪ {a}", "a = a :: =I", "a ∈ {a} :: Def 2", "a ∈ a ∨ a ∈ {a} :: Add 3", "a ∈ a ∪ {a} :: Def 4",
         "a ∈ ∅ :: =E 1,5", "⊥ :: Def 6", "<IP ∅ ≠ a ∪ {a}",
     ]);
+    // Chapter 14 (Halmos §16 Order)
+    m.insert("halmos-14-1", vec![
+        "∀x∀y∀z((⟨x, y⟩ ∈ r . ⟨y, z⟩ ∈ r) ⊃ ⟨x, z⟩ ∈ r) :: Def 1",
+        "∀y∀z((⟨a, y⟩ ∈ r . ⟨y, z⟩ ∈ r) ⊃ ⟨a, z⟩ ∈ r) :: ∀E 4",
+        "∀z((⟨a, b⟩ ∈ r . ⟨b, z⟩ ∈ r) ⊃ ⟨a, z⟩ ∈ r) :: ∀E 5",
+        "(⟨a, b⟩ ∈ r . ⟨b, c⟩ ∈ r) ⊃ ⟨a, c⟩ ∈ r :: ∀E 6",
+        "⟨a, b⟩ ∈ r . ⟨b, c⟩ ∈ r :: Conj 2,3",
+        "⟨a, c⟩ ∈ r :: MP 7,8",
+    ]);
+    m.insert("halmos-14-2", vec![
+        "∀x∀y((⟨x, y⟩ ∈ r . ⟨y, x⟩ ∈ r) ⊃ x = y) :: Def 1",
+        "∀y((⟨a, y⟩ ∈ r . ⟨y, a⟩ ∈ r) ⊃ a = y) :: ∀E 4",
+        "(⟨a, b⟩ ∈ r . ⟨b, a⟩ ∈ r) ⊃ a = b :: ∀E 5",
+        "⟨a, b⟩ ∈ r . ⟨b, a⟩ ∈ r :: Conj 2,3",
+        "a = b :: MP 6,7",
+    ]);
+    m.insert("halmos-14-3", vec![
+        "∀x∀y((⟨x, y⟩ ∈ r . ⟨y, x⟩ ∈ r) ⊃ x = y) :: Def 1",
+        "∀x∀y∀z((⟨x, y⟩ ∈ r . ⟨y, z⟩ ∈ r) ⊃ ⟨x, z⟩ ∈ r) :: Def 2",
+        "∀y∀z((⟨b, y⟩ ∈ r . ⟨y, z⟩ ∈ r) ⊃ ⟨b, z⟩ ∈ r) :: ∀E 7",
+        "∀z((⟨b, c⟩ ∈ r . ⟨c, z⟩ ∈ r) ⊃ ⟨b, z⟩ ∈ r) :: ∀E 8",
+        "(⟨b, c⟩ ∈ r . ⟨c, a⟩ ∈ r) ⊃ ⟨b, a⟩ ∈ r :: ∀E 9",
+        "⟨b, c⟩ ∈ r . ⟨c, a⟩ ∈ r :: Conj 4,5",
+        "⟨b, a⟩ ∈ r :: MP 10,11",
+        "∀y((⟨a, y⟩ ∈ r . ⟨y, a⟩ ∈ r) ⊃ a = y) :: ∀E 6",
+        "(⟨a, b⟩ ∈ r . ⟨b, a⟩ ∈ r) ⊃ a = b :: ∀E 13",
+        "⟨a, b⟩ ∈ r . ⟨b, a⟩ ∈ r :: Conj 3,12",
+        "a = b :: MP 14,15",
+        "∀y∀z((⟨c, y⟩ ∈ r . ⟨y, z⟩ ∈ r) ⊃ ⟨c, z⟩ ∈ r) :: ∀E 7",
+        "∀z((⟨c, a⟩ ∈ r . ⟨a, z⟩ ∈ r) ⊃ ⟨c, z⟩ ∈ r) :: ∀E 17",
+        "(⟨c, a⟩ ∈ r . ⟨a, b⟩ ∈ r) ⊃ ⟨c, b⟩ ∈ r :: ∀E 18",
+        "⟨c, a⟩ ∈ r . ⟨a, b⟩ ∈ r :: Conj 5,3",
+        "⟨c, b⟩ ∈ r :: MP 19,20",
+        "∀y((⟨b, y⟩ ∈ r . ⟨y, b⟩ ∈ r) ⊃ b = y) :: ∀E 6",
+        "(⟨b, c⟩ ∈ r . ⟨c, b⟩ ∈ r) ⊃ b = c :: ∀E 22",
+        "⟨b, c⟩ ∈ r . ⟨c, b⟩ ∈ r :: Conj 4,21",
+        "b = c :: MP 23,24",
+        "a = b . b = c :: Conj 16,25",
+    ]);
     // Chapter 13 (Halmos §15 Arithmetic)
     m.insert("halmos-13-1", vec!["a ∈ w ⊃ p(a, ∅) = a :: ∀E 1", "p(a, ∅) = a :: MP 3,2"]);
     m.insert("halmos-13-2", vec![
