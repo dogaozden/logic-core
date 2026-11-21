@@ -27,6 +27,8 @@ fn just(rule: &str, lines: Vec<usize>) -> Justification {
     }
     let rule = match rule {
         "Def" => Eq::Definition,
+        "Equiv" => Eq::Equivalence,
+        "Comm" => Eq::Commutation,
         other => panic!("unknown rule {other}"),
     };
     Justification::Equivalence { rule, line: lines[0] }
@@ -254,5 +256,41 @@ fn product_refuses_a_fold_missing_a_coordinate() {
         "⟨c, d⟩ ∈ a × b",
         &["⟨c, d⟩ ∈ a × b :: Def 1"],
         "⟨c, d⟩ ∈ a × b :: Def 1",
+    );
+}
+
+// ---- Rev and Comp (§10) ----
+
+#[test]
+fn inverse_refuses_the_pair_in_the_wrong_order() {
+    // ∀y(⟨a, y⟩ ∈ f ≡ ⟨y, a⟩ ∈ g) at y := b is ⟨a, b⟩ ∈ f ≡ ⟨b, a⟩ ∈ g; it does not give ⟨a, b⟩ ∈ g.
+    refused_at(
+        &["Rev(f, g)", "⟨a, b⟩ ∈ f"],
+        "⟨a, b⟩ ∈ g",
+        &[
+            "∀x∀y(⟨x, y⟩ ∈ f ≡ ⟨y, x⟩ ∈ g) :: Def 1",
+            "∀y(⟨a, y⟩ ∈ f ≡ ⟨y, a⟩ ∈ g) :: ∀E 3",
+            "⟨a, b⟩ ∈ g :: ∀E 4",
+        ],
+        "⟨a, b⟩ ∈ g :: ∀E 4",
+    );
+}
+
+#[test]
+fn composite_refuses_the_factors_swapped() {
+    // h = g∘f means first f, then g. With ⟨a, b⟩ ∈ g and ⟨b, c⟩ ∈ f the ∃I has no ⟨a, z⟩ ∈ f witness.
+    refused_at(
+        &["Comp(g, f, h)", "⟨a, b⟩ ∈ g", "⟨b, c⟩ ∈ f"],
+        "⟨a, c⟩ ∈ h",
+        &[
+            "∀x∀y(⟨x, y⟩ ∈ h ≡ ∃z(⟨x, z⟩ ∈ f . ⟨z, y⟩ ∈ g)) :: Def 1",
+            "∀y(⟨a, y⟩ ∈ h ≡ ∃z(⟨a, z⟩ ∈ f . ⟨z, y⟩ ∈ g)) :: ∀E 4",
+            "⟨a, c⟩ ∈ h ≡ ∃z(⟨a, z⟩ ∈ f . ⟨z, c⟩ ∈ g) :: ∀E 5",
+            "(⟨a, c⟩ ∈ h ⊃ ∃z(⟨a, z⟩ ∈ f . ⟨z, c⟩ ∈ g)) . (∃z(⟨a, z⟩ ∈ f . ⟨z, c⟩ ∈ g) ⊃ ⟨a, c⟩ ∈ h) :: Equiv 6",
+            "∃z(⟨a, z⟩ ∈ f . ⟨z, c⟩ ∈ g) ⊃ ⟨a, c⟩ ∈ h :: Simp 7",
+            "⟨a, b⟩ ∈ g . ⟨b, c⟩ ∈ f :: Conj 2,3",
+            "∃z(⟨a, z⟩ ∈ f . ⟨z, c⟩ ∈ g) :: ∃I 9",
+        ],
+        "∃z(⟨a, z⟩ ∈ f . ⟨z, c⟩ ∈ g) :: ∃I 9",
     );
 }

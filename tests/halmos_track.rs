@@ -453,6 +453,33 @@ fn solutions() -> BTreeMap<&'static str, Vec<&'static str>> {
         v.extend(leak(ext_close(45, "⋃{a, b}", "a ∪ b")));
         v
     });
+    // Chapter 10
+    m.insert("halmos-10-1", vec![
+        "∀x∀y(⟨x, y⟩ ∈ f ≡ ⟨y, x⟩ ∈ g) :: Def 1", "∀y(⟨a, y⟩ ∈ f ≡ ⟨y, a⟩ ∈ g) :: ∀E 3",
+        "⟨a, b⟩ ∈ f ≡ ⟨b, a⟩ ∈ g :: ∀E 4",
+        "(⟨a, b⟩ ∈ f ⊃ ⟨b, a⟩ ∈ g) . (⟨b, a⟩ ∈ g ⊃ ⟨a, b⟩ ∈ f) :: Equiv 5",
+        "⟨a, b⟩ ∈ f ⊃ ⟨b, a⟩ ∈ g :: Simp 6", "⟨b, a⟩ ∈ g :: MP 7,2",
+    ]);
+    m.insert("halmos-10-2", vec![
+        "∀x∀y(⟨x, y⟩ ∈ f ≡ ⟨y, x⟩ ∈ g) :: Def 1", "∀y(⟨d, y⟩ ∈ f ≡ ⟨y, d⟩ ∈ g) :: ∀E 2",
+        "⟨d, c⟩ ∈ f ≡ ⟨c, d⟩ ∈ g :: ∀E 3",
+        "(⟨d, c⟩ ∈ f ⊃ ⟨c, d⟩ ∈ g) . (⟨c, d⟩ ∈ g ⊃ ⟨d, c⟩ ∈ f) :: Equiv 4",
+        "(⟨c, d⟩ ∈ g ⊃ ⟨d, c⟩ ∈ f) . (⟨d, c⟩ ∈ f ⊃ ⟨c, d⟩ ∈ g) :: Comm 5",
+        "⟨c, d⟩ ∈ g ≡ ⟨d, c⟩ ∈ f :: Equiv 6",
+        "∀y(⟨c, y⟩ ∈ g ≡ ⟨y, c⟩ ∈ f) :: ∀I 7",
+        "∀x∀y(⟨x, y⟩ ∈ g ≡ ⟨y, x⟩ ∈ f) :: ∀I 8",
+        "Rev(g, f) :: Def 9",
+    ]);
+    m.insert("halmos-10-3", vec![
+        "∀x∀y(⟨x, y⟩ ∈ h ≡ ∃z(⟨x, z⟩ ∈ f . ⟨z, y⟩ ∈ g)) :: Def 1",
+        "∀y(⟨a, y⟩ ∈ h ≡ ∃z(⟨a, z⟩ ∈ f . ⟨z, y⟩ ∈ g)) :: ∀E 4",
+        "⟨a, c⟩ ∈ h ≡ ∃z(⟨a, z⟩ ∈ f . ⟨z, c⟩ ∈ g) :: ∀E 5",
+        "(⟨a, c⟩ ∈ h ⊃ ∃z(⟨a, z⟩ ∈ f . ⟨z, c⟩ ∈ g)) . (∃z(⟨a, z⟩ ∈ f . ⟨z, c⟩ ∈ g) ⊃ ⟨a, c⟩ ∈ h) :: Equiv 6",
+        "∃z(⟨a, z⟩ ∈ f . ⟨z, c⟩ ∈ g) ⊃ ⟨a, c⟩ ∈ h :: Simp 7",
+        "⟨a, b⟩ ∈ f . ⟨b, c⟩ ∈ g :: Conj 2,3",
+        "∃z(⟨a, z⟩ ∈ f . ⟨z, c⟩ ∈ g) :: ∃I 9",
+        "⟨a, c⟩ ∈ h :: MP 8,10",
+    ]);
     // Chapter 11
     m.insert("halmos-11-1", vec!["a = a :: =I", "a ∈ {a} :: Def 1", "a ∈ a ∨ a ∈ {a} :: Add 2", "a ∈ a ∪ {a} :: Def 3"]);
     m.insert("halmos-11-2", vec![

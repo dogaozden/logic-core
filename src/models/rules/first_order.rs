@@ -227,6 +227,42 @@ pub fn definition_unfoldings(f: &Formula) -> Vec<Formula> {
                 Box::new(every_x),
             ));
         }
+        Formula::Predicate(name, args) if name == "Rev" && args.len() == 2 => {
+            // Rev(f, g) :: g is the inverse of f: ∀x∀y(⟨x, y⟩ ∈ f ≡ ⟨y, x⟩ ∈ g)
+            let (fe, ge) = (&args[0], &args[1]);
+            let mut used: std::collections::BTreeSet<String> = args.iter().flat_map(|t| t.names()).collect();
+            let x = Term::Name(fresh_avoiding(&mut used));
+            let y = Term::Name(fresh_avoiding(&mut used));
+            let xy = Term::OrderedPair(Box::new(x.clone()), Box::new(y.clone()));
+            let yx = Term::OrderedPair(Box::new(y.clone()), Box::new(x.clone()));
+            let body = Formula::Biconditional(Box::new(mem(&xy, fe)), Box::new(mem(&yx, ge)));
+            out.push(Formula::ForAll(
+                x.display_string(),
+                Box::new(Formula::ForAll(y.display_string(), Box::new(body))),
+            ));
+        }
+        Formula::Predicate(name, args) if name == "Comp" && args.len() == 3 => {
+            // Comp(g, f, h) :: h = g∘f: ∀x∀z(⟨x, z⟩ ∈ h ≡ ∃y(⟨x, y⟩ ∈ f . ⟨y, z⟩ ∈ g))
+            let (ge, fe, he) = (&args[0], &args[1], &args[2]);
+            let mut used: std::collections::BTreeSet<String> = args.iter().flat_map(|t| t.names()).collect();
+            let x = Term::Name(fresh_avoiding(&mut used));
+            let z = Term::Name(fresh_avoiding(&mut used));
+            let y = Term::Name(fresh_avoiding(&mut used));
+            let xz = Term::OrderedPair(Box::new(x.clone()), Box::new(z.clone()));
+            let xy = Term::OrderedPair(Box::new(x.clone()), Box::new(y.clone()));
+            let yz = Term::OrderedPair(Box::new(y.clone()), Box::new(z.clone()));
+            let some_y = Formula::Exists(
+                y.display_string(),
+                Box::new(Formula::And(Box::new(mem(&xy, fe)), Box::new(mem(&yz, ge)))),
+            );
+            out.push(Formula::ForAll(
+                x.display_string(),
+                Box::new(Formula::ForAll(
+                    z.display_string(),
+                    Box::new(Formula::Biconditional(Box::new(mem(&xz, he)), Box::new(some_y))),
+                )),
+            ));
+        }
         Formula::Subset(t, s) => {
             let x = Term::Name(fresh(&[t, s]));
             out.push(Formula::ForAll(

@@ -273,6 +273,16 @@ pub fn halmos_track() -> Vec<TrackChapter> {
                 Ex { title: "The union of a pair", level: Hard, premises: &["@ext"], conclusion: "⋃{a, b} = a ∪ b",
                     hint: "Same shape as 9.1, with two cases: d = a or d = b (Def on d ∈ {a, b}). Each case gives c ∈ a ∪ b; combine them with CD and Taut. The other way, two ∃I witnesses; CD again." },
             ]),
+        chapter(10, "Inverses and Composites",
+            "Rev(f, g): g is the inverse of f, ⟨x, y⟩ ∈ f iff ⟨y, x⟩ ∈ g. Comp(g, f, h): h = g∘f, first f then g. Both are abbreviations unfolded by Def.",
+            &[
+                Ex { title: "Inverse reverses a pair", level: Easy, premises: &["Rev(f, g)", "⟨a, b⟩ ∈ f"], conclusion: "⟨b, a⟩ ∈ g",
+                    hint: "Def gives ∀x∀y(⟨x, y⟩ ∈ f ≡ ⟨y, x⟩ ∈ g); instantiate twice, Equiv, Simp, then MP." },
+                Ex { title: "The inverse of the inverse direction", level: Medium, premises: &["Rev(f, g)"], conclusion: "Rev(g, f)",
+                    hint: "Instantiate at d and c with the roles swapped, Equiv, Comm, Equiv again; then ∀I twice and fold with Def." },
+                Ex { title: "A composite pair", level: Medium, premises: &["Comp(g, f, h)", "⟨a, b⟩ ∈ f", "⟨b, c⟩ ∈ g"], conclusion: "⟨a, c⟩ ∈ h",
+                    hint: "Def and ∀E at a and c; Equiv, then Simp for the direction ∃ ⊃ h. Conj the two premises, ∃I with witness b, MP." },
+            ]),
         chapter(11, "Numbers",
             "The successor x ∪ {x}, and the Axiom of Infinity.",
             &[
