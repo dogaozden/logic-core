@@ -253,6 +253,18 @@ pub fn halmos_track() -> Vec<TrackChapter> {
                     conclusion: "∀x(⟨x, a⟩ ∈ r ⊃ ⟨x, b⟩ ∈ r)",
                     hint: "From ⟨c, a⟩ get ⟨a, c⟩; then x ~ a ~ c ~ b." },
             ]),
+        chapter(8, "Functions",
+            "Fun(f, a, b): f is a function from a to b, an abbreviation for f ⊆ a × b and a unique value for each x in a. Cartesian products a × b.",
+            &[
+                Ex { title: "A function is a relation from a to b", level: Easy, premises: &["Fun(f, a, b)"], conclusion: "f ⊆ a × b",
+                    hint: "Unfold Fun with Def, then Simp." },
+                Ex { title: "Every point of a has a value", level: Medium, premises: &["Fun(f, a, b)", "c ∈ a"], conclusion: "∃y(⟨c, y⟩ ∈ f)",
+                    hint: "Unfold, Simp, ∀E at c, MP with c ∈ a; ∃E on the value, Simp, ∃I, then close ∃E." },
+                Ex { title: "Values are unique", level: Hard, premises: &["Fun(f, a, b)", "c ∈ a", "⟨c, d⟩ ∈ f", "⟨c, e⟩ ∈ f"], conclusion: "d = e",
+                    hint: "Both d and e equal the value g given by ∃E; each step is ∀E, MP, then =I and =E to turn g = e into d = e." },
+                Ex { title: "Pairs of a and b are in a × b", level: Medium, premises: &["c ∈ a", "d ∈ b"], conclusion: "⟨c, d⟩ ∈ a × b",
+                    hint: "Conj the premises with ⟨c, d⟩ = ⟨c, d⟩ (=I), then ∃I twice on the product, then fold with Def." },
+            ]),
         chapter(11, "Numbers",
             "The successor x ∪ {x}, and the Axiom of Infinity.",
             &[

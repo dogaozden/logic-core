@@ -164,6 +164,10 @@ pub fn quantifier_negation_forms(f: &Formula) -> Vec<Formula> {
 /// t ∈ {s, r} :: t = s ∨ t = r      t ∈ s ∪ r :: t ∈ s ∨ t ∈ r t ∈ s ∩ r :: t ∈ s . t ∈ r
 /// t ∈ s − r :: t ∈ s . t ∉ r       t ∈ ℘(s) :: t ⊆ s          t ∈ ⋃s :: ∃x(x ∈ s . t ∈ x)
 /// ⟨s, r⟩ = {{s}, {s, r}} (anywhere in an atomic formula)
+///
+/// t ∈ s × r :: ∃x∃y(x ∈ s . y ∈ r . t = ⟨x, y⟩)
+/// Fun(f, a, b) :: f ⊆ a × b . ∀x(x ∈ a ⊃ ∃y(⟨x, y⟩ ∈ f . ∀z(⟨x, z⟩ ∈ f ⊃ z = y)))
+///   (Halmos §8: f is a function from a to b. The predicate is an abbreviation, not syntax.)
 pub fn definition_unfoldings(f: &Formula) -> Vec<Formula> {
     let mem = |a: &Term, b: &Term| Formula::Membership(a.clone(), b.clone());
     let id = |a: &Term, b: &Term| Formula::Identity(a.clone(), b.clone());
@@ -171,8 +175,58 @@ pub fn definition_unfoldings(f: &Formula) -> Vec<Formula> {
         let used: std::collections::BTreeSet<String> = ts.iter().flat_map(|t| t.names()).collect();
         Formula::fresh_name(&used)
     };
+    // Fresh bound names: avoid every name in `used`, and each other.
+    let fresh_avoiding = |used: &mut std::collections::BTreeSet<String>| {
+        let n = Formula::fresh_name(used);
+        used.insert(n.clone());
+        n
+    };
     let mut out = Vec::new();
     match f {
+        Formula::Membership(t, Term::Product(s, r)) => {
+            let mut used: std::collections::BTreeSet<String> =
+                [t, s.as_ref(), r.as_ref()].iter().flat_map(|t| t.names()).collect();
+            let x = Term::Name(fresh_avoiding(&mut used));
+            let y = Term::Name(fresh_avoiding(&mut used));
+            let pair = Term::OrderedPair(Box::new(x.clone()), Box::new(y.clone()));
+            let body = Formula::And(
+                Box::new(Formula::And(Box::new(mem(&x, s)), Box::new(mem(&y, r)))),
+                Box::new(id(t, &pair)),
+            );
+            out.push(Formula::Exists(
+                x.display_string(),
+                Box::new(Formula::Exists(y.display_string(), Box::new(body))),
+            ));
+        }
+        Formula::Predicate(name, args) if name == "Fun" && args.len() == 3 => {
+            let (fe, a, b) = (&args[0], &args[1], &args[2]);
+            let mut used: std::collections::BTreeSet<String> = args.iter().flat_map(|t| t.names()).collect();
+            let x = Term::Name(fresh_avoiding(&mut used));
+            let y = Term::Name(fresh_avoiding(&mut used));
+            let z = Term::Name(fresh_avoiding(&mut used));
+            let inner = Formula::ForAll(
+                z.display_string(),
+                Box::new(Formula::Implies(
+                    Box::new(mem(&Term::OrderedPair(Box::new(x.clone()), Box::new(z.clone())), fe)),
+                    Box::new(id(&z, &y)),
+                )),
+            );
+            let some_y = Formula::Exists(
+                y.display_string(),
+                Box::new(Formula::And(
+                    Box::new(mem(&Term::OrderedPair(Box::new(x.clone()), Box::new(y.clone())), fe)),
+                    Box::new(inner),
+                )),
+            );
+            let every_x = Formula::ForAll(
+                x.display_string(),
+                Box::new(Formula::Implies(Box::new(mem(&x, a)), Box::new(some_y))),
+            );
+            out.push(Formula::And(
+                Box::new(Formula::Subset(fe.clone(), Term::Product(Box::new(a.clone()), Box::new(b.clone())))),
+                Box::new(every_x),
+            ));
+        }
         Formula::Subset(t, s) => {
             let x = Term::Name(fresh(&[t, s]));
             out.push(Formula::ForAll(

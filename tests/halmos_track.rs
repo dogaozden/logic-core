@@ -383,6 +383,45 @@ fn solutions() -> BTreeMap<&'static str, Vec<&'static str>> {
         "⟨d, c⟩ ∈ r . ⟨c, b⟩ ∈ r :: Conj 14,5", "⟨d, b⟩ ∈ r :: MP 16,17", "<CP ⟨d, a⟩ ∈ r ⊃ ⟨d, b⟩ ∈ r",
         "∀x(⟨x, a⟩ ∈ r ⊃ ⟨x, b⟩ ∈ r) :: ∀I 19",
     ]);
+    // Chapter 8
+    m.insert("halmos-8-1", vec![
+        "f ⊆ a × b . ∀x(x ∈ a ⊃ ∃y(⟨x, y⟩ ∈ f . ∀z(⟨x, z⟩ ∈ f ⊃ z = y))) :: Def 1", "f ⊆ a × b :: Simp 2",
+    ]);
+    m.insert("halmos-8-2", vec![
+        "f ⊆ a × b . ∀x(x ∈ a ⊃ ∃y(⟨x, y⟩ ∈ f . ∀z(⟨x, z⟩ ∈ f ⊃ z = y))) :: Def 1",
+        "∀x(x ∈ a ⊃ ∃y(⟨x, y⟩ ∈ f . ∀z(⟨x, z⟩ ∈ f ⊃ z = y))) :: Simp 3",
+        "c ∈ a ⊃ ∃y(⟨c, y⟩ ∈ f . ∀z(⟨c, z⟩ ∈ f ⊃ z = y)) :: ∀E 4",
+        "∃y(⟨c, y⟩ ∈ f . ∀z(⟨c, z⟩ ∈ f ⊃ z = y)) :: MP 5,2",
+        "∃E> ⟨c, d⟩ ∈ f . ∀z(⟨c, z⟩ ∈ f ⊃ z = d)",
+        "⟨c, d⟩ ∈ f :: Simp 7",
+        "∃y(⟨c, y⟩ ∈ f) :: ∃I 8",
+        "<∃E ∃y(⟨c, y⟩ ∈ f)",
+    ]);
+    m.insert("halmos-8-3", vec![
+        "f ⊆ a × b . ∀x(x ∈ a ⊃ ∃y(⟨x, y⟩ ∈ f . ∀z(⟨x, z⟩ ∈ f ⊃ z = y))) :: Def 1",
+        "∀x(x ∈ a ⊃ ∃y(⟨x, y⟩ ∈ f . ∀z(⟨x, z⟩ ∈ f ⊃ z = y))) :: Simp 5",
+        "c ∈ a ⊃ ∃y(⟨c, y⟩ ∈ f . ∀z(⟨c, z⟩ ∈ f ⊃ z = y)) :: ∀E 6",
+        "∃y(⟨c, y⟩ ∈ f . ∀z(⟨c, z⟩ ∈ f ⊃ z = y)) :: MP 7,2",
+        "∃E> ⟨c, g⟩ ∈ f . ∀z(⟨c, z⟩ ∈ f ⊃ z = g)",
+        "⟨c, g⟩ ∈ f :: Simp 9",
+        "∀z(⟨c, z⟩ ∈ f ⊃ z = g) :: Simp 9",
+        "⟨c, d⟩ ∈ f ⊃ d = g :: ∀E 11",
+        "d = g :: MP 12,3",
+        "⟨c, e⟩ ∈ f ⊃ e = g :: ∀E 11",
+        "e = g :: MP 14,4",
+        "e = e :: =I",
+        "g = e :: =E 15,16",
+        "d = e :: =E 17,13",
+        "<∃E d = e",
+    ]);
+    m.insert("halmos-8-4", vec![
+        "c ∈ a . d ∈ b :: Conj 1,2",
+        "⟨c, d⟩ = ⟨c, d⟩ :: =I",
+        "c ∈ a . d ∈ b . ⟨c, d⟩ = ⟨c, d⟩ :: Conj 3,4",
+        "∃y(c ∈ a . y ∈ b . ⟨c, d⟩ = ⟨c, y⟩) :: ∃I 5",
+        "∃x ∃y(x ∈ a . y ∈ b . ⟨c, d⟩ = ⟨x, y⟩) :: ∃I 6",
+        "⟨c, d⟩ ∈ a × b :: Def 7",
+    ]);
     // Chapter 11
     m.insert("halmos-11-1", vec!["a = a :: =I", "a ∈ {a} :: Def 1", "a ∈ a ∨ a ∈ {a} :: Add 2", "a ∈ a ∪ {a} :: Def 3"]);
     m.insert("halmos-11-2", vec![

@@ -26,6 +26,8 @@ pub enum Term {
     Intersection(Box<Term>, Box<Term>),
     /// t − s
     Difference(Box<Term>, Box<Term>),
+    /// t × s (cartesian product)
+    Product(Box<Term>, Box<Term>),
     /// ℘(t)
     PowerSet(Box<Term>),
     /// ⋃t
@@ -47,7 +49,8 @@ impl Term {
             | Term::OrderedPair(a, b)
             | Term::Union(a, b)
             | Term::Intersection(a, b)
-            | Term::Difference(a, b) => vec![a, b],
+            | Term::Difference(a, b)
+            | Term::Product(a, b) => vec![a, b],
         }
     }
 
@@ -79,6 +82,10 @@ impl Term {
             Term::Difference(_, _) => {
                 let a = next();
                 Term::Difference(a, next())
+            }
+            Term::Product(_, _) => {
+                let a = next();
+                Term::Product(a, next())
             }
         }
     }
@@ -135,7 +142,7 @@ impl Term {
     fn is_simple(&self) -> bool {
         !matches!(
             self,
-            Term::Union(_, _) | Term::Intersection(_, _) | Term::Difference(_, _)
+            Term::Union(_, _) | Term::Intersection(_, _) | Term::Difference(_, _) | Term::Product(_, _)
         )
     }
 
@@ -186,6 +193,12 @@ impl Term {
                 "{} {} {}",
                 a.operand(ascii),
                 if ascii { "\\minus" } else { "−" },
+                b.operand(ascii)
+            ),
+            Term::Product(a, b) => format!(
+                "{} {} {}",
+                a.operand(ascii),
+                if ascii { "\\times" } else { "×" },
                 b.operand(ascii)
             ),
             Term::PowerSet(t) => format!("{}({})", if ascii { "\\pow" } else { "℘" }, t.render(ascii)),

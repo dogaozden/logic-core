@@ -856,19 +856,34 @@ impl<'a> FormulaParser<'a> {
         }))
     }
 
+    /// `∪ ∩ − ` bind loosest and associate to the left; `×` binds tighter (see parse_term_product).
     fn parse_term(&mut self) -> Result<Term, ParseError> {
-        let mut left = self.parse_term_primary()?;
+        let mut left = self.parse_term_product()?;
         loop {
             self.skip_whitespace();
             if ["∪", "\\cup"].iter().any(|s| self.matches(s)) {
-                let right = self.parse_term_primary()?;
+                let right = self.parse_term_product()?;
                 left = Term::Union(Box::new(left), Box::new(right));
             } else if ["∩", "\\cap"].iter().any(|s| self.matches(s)) {
-                let right = self.parse_term_primary()?;
+                let right = self.parse_term_product()?;
                 left = Term::Intersection(Box::new(left), Box::new(right));
             } else if ["−", "∖", "\\minus", "\\setminus"].iter().any(|s| self.matches(s)) {
-                let right = self.parse_term_primary()?;
+                let right = self.parse_term_product()?;
                 left = Term::Difference(Box::new(left), Box::new(right));
+            } else {
+                return Ok(left);
+            }
+        }
+    }
+
+    /// `a × b` (left-associative, tighter than ∪ ∩ −).
+    fn parse_term_product(&mut self) -> Result<Term, ParseError> {
+        let mut left = self.parse_term_primary()?;
+        loop {
+            self.skip_whitespace();
+            if ["×", "\\times"].iter().any(|s| self.matches(s)) {
+                let right = self.parse_term_primary()?;
+                left = Term::Product(Box::new(left), Box::new(right));
             } else {
                 return Ok(left);
             }
