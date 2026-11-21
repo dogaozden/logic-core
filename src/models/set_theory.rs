@@ -265,6 +265,14 @@ pub fn halmos_track() -> Vec<TrackChapter> {
                 Ex { title: "Pairs of a and b are in a × b", level: Medium, premises: &["c ∈ a", "d ∈ b"], conclusion: "⟨c, d⟩ ∈ a × b",
                     hint: "Conj the premises with ⟨c, d⟩ = ⟨c, d⟩ (=I), then ∃I twice on the product, then fold with Def." },
             ]),
+        chapter(9, "Families of Sets",
+            "Unions of families: ⋃a collects the members of the members of a. Singletons and pairs of sets give back their members.",
+            &[
+                Ex { title: "The union of a singleton", level: Medium, premises: &["@ext"], conclusion: "⋃{a} = a",
+                    hint: "For c ∈ ⋃{a}: Def gives ∃x(x ∈ {a} . c ∈ x), ∃E on it, then =E turns c ∈ d into c ∈ a. For c ∈ a: ∃I with witness a. Equiv, ∀I, Extension." },
+                Ex { title: "The union of a pair", level: Hard, premises: &["@ext"], conclusion: "⋃{a, b} = a ∪ b",
+                    hint: "Same shape as 9.1, with two cases: d = a or d = b (Def on d ∈ {a, b}). Each case gives c ∈ a ∪ b; combine them with CD and Taut. The other way, two ∃I witnesses; CD again." },
+            ]),
         chapter(11, "Numbers",
             "The successor x ∪ {x}, and the Axiom of Infinity.",
             &[

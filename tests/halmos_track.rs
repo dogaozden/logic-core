@@ -422,6 +422,37 @@ fn solutions() -> BTreeMap<&'static str, Vec<&'static str>> {
         "∃x ∃y(x ∈ a . y ∈ b . ⟨c, d⟩ = ⟨x, y⟩) :: ∃I 6",
         "⟨c, d⟩ ∈ a × b :: Def 7",
     ]);
+    // Chapter 9
+    m.insert("halmos-9-1", {
+        let mut v = vec![
+            "CP> c ∈ ⋃{a}", "∃x(x ∈ {a} . c ∈ x) :: Def 2", "∃E> d ∈ {a} . c ∈ d", "d ∈ {a} :: Simp 4", "d = a :: Def 5",
+            "c ∈ d :: Simp 4", "c ∈ a :: =E 6,7", "<∃E c ∈ a", "<CP c ∈ ⋃{a} ⊃ c ∈ a", "CP> c ∈ a", "a = a :: =I",
+            "a ∈ {a} :: Def 12", "a ∈ {a} . c ∈ a :: Conj 13,11", "∃x(x ∈ {a} . c ∈ x) :: ∃I 14", "c ∈ ⋃{a} :: Def 15",
+            "<CP c ∈ a ⊃ c ∈ ⋃{a}", "(c ∈ ⋃{a} ⊃ c ∈ a) . (c ∈ a ⊃ c ∈ ⋃{a}) :: Conj 10,17", "c ∈ ⋃{a} ≡ c ∈ a :: Equiv 18",
+            "∀z(z ∈ ⋃{a} ≡ z ∈ a) :: ∀I 19",
+        ];
+        v.extend(leak(ext_close(20, "⋃{a}", "a")));
+        v
+    });
+    m.insert("halmos-9-2", {
+        let mut v = vec![
+            "CP> c ∈ ⋃{a, b}", "∃x(x ∈ {a, b} . c ∈ x) :: Def 2", "∃E> d ∈ {a, b} . c ∈ d", "d ∈ {a, b} :: Simp 4",
+            "d = a ∨ d = b :: Def 5", "c ∈ d :: Simp 4",
+            "CP> d = a", "c ∈ a :: =E 8,7", "c ∈ a ∨ c ∈ b :: Add 9", "c ∈ a ∪ b :: Def 10", "<CP d = a ⊃ c ∈ a ∪ b",
+            "CP> d = b", "c ∈ b :: =E 13,7", "c ∈ a ∨ c ∈ b :: Add 14", "c ∈ a ∪ b :: Def 15", "<CP d = b ⊃ c ∈ a ∪ b",
+            "c ∈ a ∪ b ∨ c ∈ a ∪ b :: CD 6,12,17", "c ∈ a ∪ b :: Taut 18", "<∃E c ∈ a ∪ b", "<CP c ∈ ⋃{a, b} ⊃ c ∈ a ∪ b",
+            "CP> c ∈ a ∪ b", "c ∈ a ∨ c ∈ b :: Def 22", "CP> c ∈ a", "a = a :: =I", "a = a ∨ a = b :: Add 25",
+            "a ∈ {a, b} :: Def 26", "a ∈ {a, b} . c ∈ a :: Conj 27,24", "∃x(x ∈ {a, b} . c ∈ x) :: ∃I 28", "c ∈ ⋃{a, b} :: Def 29",
+            "<CP c ∈ a ⊃ c ∈ ⋃{a, b}", "CP> c ∈ b", "b = b :: =I", "b = a ∨ b = b :: Add 33", "b ∈ {a, b} :: Def 34",
+            "b ∈ {a, b} . c ∈ b :: Conj 35,32", "∃x(x ∈ {a, b} . c ∈ x) :: ∃I 36", "c ∈ ⋃{a, b} :: Def 37",
+            "<CP c ∈ b ⊃ c ∈ ⋃{a, b}", "c ∈ ⋃{a, b} ∨ c ∈ ⋃{a, b} :: CD 23,31,39", "c ∈ ⋃{a, b} :: Taut 40",
+            "<CP c ∈ a ∪ b ⊃ c ∈ ⋃{a, b}",
+            "(c ∈ ⋃{a, b} ⊃ c ∈ a ∪ b) . (c ∈ a ∪ b ⊃ c ∈ ⋃{a, b}) :: Conj 21,42", "c ∈ ⋃{a, b} ≡ c ∈ a ∪ b :: Equiv 43",
+            "∀z(z ∈ ⋃{a, b} ≡ z ∈ a ∪ b) :: ∀I 44",
+        ];
+        v.extend(leak(ext_close(45, "⋃{a, b}", "a ∪ b")));
+        v
+    });
     // Chapter 11
     m.insert("halmos-11-1", vec!["a = a :: =I", "a ∈ {a} :: Def 1", "a ∈ a ∨ a ∈ {a} :: Add 2", "a ∈ a ∪ {a} :: Def 3"]);
     m.insert("halmos-11-2", vec![
