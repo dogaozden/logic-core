@@ -488,6 +488,35 @@ fn solutions() -> BTreeMap<&'static str, Vec<&'static str>> {
         "IP> ∅ = a ∪ {a}", "a = a :: =I", "a ∈ {a} :: Def 2", "a ∈ a ∨ a ∈ {a} :: Add 3", "a ∈ a ∪ {a} :: Def 4",
         "a ∈ ∅ :: =E 1,5", "⊥ :: Def 6", "<IP ∅ ≠ a ∪ {a}",
     ]);
+    // Chapter 13 (Halmos §15 Arithmetic)
+    m.insert("halmos-13-1", vec!["a ∈ w ⊃ p(a, ∅) = a :: ∀E 1", "p(a, ∅) = a :: MP 3,2"]);
+    m.insert("halmos-13-2", vec![
+        "∀y((a ∈ w . y ∈ w) ⊃ p(a, y ∪ {y}) = p(a, y) ∪ {p(a, y)}) :: ∀E 1",
+        "(a ∈ w . b ∈ w) ⊃ p(a, b ∪ {b}) = p(a, b) ∪ {p(a, b)} :: ∀E 4",
+        "a ∈ w . b ∈ w :: Conj 2,3",
+        "p(a, b ∪ {b}) = p(a, b) ∪ {p(a, b)} :: MP 5,6",
+    ]);
+    m.insert("halmos-13-3", vec![
+        "Ind(w) :: Simp 3",
+        "∅ ∈ w . ∀x(x ∈ w ⊃ x ∪ {x} ∈ w) :: Def 6",
+        "∅ ∈ w :: Simp 7",
+        "∅ ∈ w ⊃ p(∅, ∅) = ∅ :: ∀E 1",
+        "p(∅, ∅) = ∅ :: MP 9,8",
+        "∀y((∅ ∈ w . y ∈ w) ⊃ p(∅, y ∪ {y}) = p(∅, y) ∪ {p(∅, y)}) :: ∀E 2",
+        "CP> x ∈ w . p(∅, x) = x",
+        "x ∈ w :: Simp 12",
+        "p(∅, x) = x :: Simp 12",
+        "∅ ∈ w . x ∈ w :: Conj 8,13",
+        "(∅ ∈ w . x ∈ w) ⊃ p(∅, x ∪ {x}) = p(∅, x) ∪ {p(∅, x)} :: ∀E 11",
+        "p(∅, x ∪ {x}) = p(∅, x) ∪ {p(∅, x)} :: MP 16,15",
+        "p(∅, x ∪ {x}) = x ∪ {x} :: =E 14,17",
+        "<CP x ∈ w . p(∅, x) = x ⊃ p(∅, x ∪ {x}) = x ∪ {x}",
+        "∀x((x ∈ w . p(∅, x) = x) ⊃ p(∅, x ∪ {x}) = x ∪ {x}) :: ∀I 19",
+        "p(∅, ∅) = ∅ . ∀x((x ∈ w . p(∅, x) = x) ⊃ p(∅, x ∪ {x}) = x ∪ {x}) :: Conj 10,20",
+        "∀a(a ∈ w ⊃ p(∅, a) = a) :: MP 4,21",
+        "a ∈ w ⊃ p(∅, a) = a :: ∀E 22",
+        "p(∅, a) = a :: MP 23,5",
+    ]);
     // Chapter 12
     m.insert("halmos-12-1", vec!["∅ ∈ s . ∀x(x ∈ s ⊃ x ∪ {x} ∈ s) :: Def 1", "∅ ∈ s :: Simp 2"]);
     m.insert("halmos-12-2", vec![
@@ -550,17 +579,18 @@ fn every_exercise_has_a_verified_solution() {
 #[test]
 fn chapters_are_in_halmos_order_and_axioms_appear_once() {
     let track = halmos_track();
-    let numbers: Vec<u8> = track.iter().map(|c| c.number).collect();
+    let numbers: Vec<Option<u8>> = track.iter().map(|c| c.number).collect();
     let mut sorted = numbers.clone();
-    sorted.sort();
-    assert_eq!(numbers, sorted);
+    sorted.sort_by_key(|n| n.unwrap_or(u8::MAX));
+    assert_eq!(numbers, sorted, "sections ascend, the appendix (None) last");
+    assert!(numbers.iter().flatten().all(|n| *n <= 21), "every section is one Halmos section (1–21)");
     let ids: Vec<String> = track.iter().flat_map(|c| c.axioms.iter().map(|a| a.id.clone())).collect();
-    assert_eq!(ids.len(), 10);
+    assert_eq!(ids.len(), 13);
     for ch in &track {
         for ex in &ch.exercises {
             for ax in &ex.axioms {
                 let introduced = track.iter().find(|c| c.axioms.iter().any(|a| &a.id == ax)).unwrap();
-                assert!(introduced.number <= ch.number, "{} uses {} before it is introduced", ex.id, ax);
+                assert!(introduced.number <= ch.number || ch.number.is_none(), "{} uses {} before it is introduced", ex.id, ax);
             }
         }
     }

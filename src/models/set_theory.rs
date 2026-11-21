@@ -31,9 +31,10 @@ pub struct TrackExercise {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackChapter {
+    /// Stable progress key (not a section number)
     pub id: String,
-    /// Halmos section number (0: predicate-logic warm-up)
-    pub number: u8,
+    /// Section number in Halmos's *Naive Set Theory*; `None` for material outside the book
+    pub number: Option<u8>,
     pub title: String,
     pub summary: String,
     /// Axioms introduced in this chapter
@@ -63,13 +64,19 @@ pub fn axioms() -> Vec<(u8, Axiom)> {
             "For every collection of sets there is a set containing all the elements of its members."),
         ax(5, "power", "Powers", "∀x ∃y ∀z(z ∈ y ≡ z ⊆ x)",
             "For each set there is a set containing all its subsets."),
+        ax(13, "nat", "The naturals (w = ω)", "Ind(w) . ∀s(Ind(s) ⊃ w ⊆ s)",
+            "w is the least inductive set (Halmos §14). Exercises give this as the premise that w is inductive and below every inductive set."),
+        ax(13, "add0", "Addition, base", "∀x(x ∈ w ⊃ p(x, ∅) = x)",
+            "x + 0 = x for natural x. The recursion theorem (Halmos §15) gives add; the clauses are the premises."),
+        ax(13, "adds", "Addition, successor", "∀x∀y((x ∈ w . y ∈ w) ⊃ p(x, y ∪ {y}) = p(x, y) ∪ {p(x, y)})",
+            "x + S(y) = S(x + y) for naturals, with successor S(y) = y ∪ {y}."),
         ax(11, "inf", "Infinity", "∃x(∅ ∈ x . ∀y(y ∈ x ⊃ y ∪ {y} ∈ x))",
             "There is a set containing 0 and the successor of each of its elements."),
         ax(15, "choice", "Choice", "∀x((∅ ∉ x . ∀y ∀z((y ∈ x . z ∈ x . y ≠ z) ⊃ y ∩ z = ∅)) ⊃ ∃u ∀y(y ∈ x ⊃ ∃w ∀z(z ∈ y ∩ u ≡ z = w)))",
             "Every collection of disjoint nonempty sets has a set meeting each member in exactly one element."),
-        ax(19, "repl", "Substitution / Replacement (schema)", "∀x(∀y(y ∈ x ⊃ ∃z ∀w(S(y, w) ≡ w = z)) ⊃ ∃u ∀z(z ∈ u ≡ ∃y(y ∈ x . S(y, z))))",
+        ax(APPENDIX_KEY, "repl", "Substitution / Replacement (schema)", "∀x(∀y(y ∈ x ⊃ ∃z ∀w(S(y, w) ≡ w = z)) ⊃ ∃u ∀z(z ∈ u ≡ ∃y(y ∈ x . S(y, z))))",
             "The image of a set under a functional condition S(x, y) is a set."),
-        ax(19, "found", "Foundation (not in Halmos)", "∀x(∃y(y ∈ x) ⊃ ∃y(y ∈ x . ~∃z(z ∈ y . z ∈ x)))",
+        ax(APPENDIX_KEY, "found", "Foundation (not in Halmos)", "∀x(∃y(y ∈ x) ⊃ ∃y(y ∈ x . ~∃z(z ∈ y . z ∈ x)))",
             "Every nonempty set has an ∈-minimal element. ZFC includes it; Halmos never uses it."),
     ]
 }
@@ -109,14 +116,28 @@ fn exercise(chapter: u8, n: usize, e: &Ex) -> TrackExercise {
     TrackExercise { id: theorem.id.clone(), title: e.title.to_string(), hint: e.hint.to_string(), axioms, theorem }
 }
 
-fn chapter(number: u8, title: &str, summary: &str, exercises: &[Ex]) -> TrackChapter {
+/// Chapter keys are progress keys, not section numbers. Keys never change once shipped, so
+/// saved progress and the test table stay valid. Key 19 (Foundation) has no Halmos section.
+pub const APPENDIX_KEY: u8 = 19;
+
+fn book_section(key: u8) -> Option<u8> {
+    match key {
+        0 => Some(1),
+        1..=18 => Some(key + 2),
+        APPENDIX_KEY => None,
+        20 => Some(21),
+        other => panic!("set-theory chapter key {other} has no Halmos section"),
+    }
+}
+
+fn chapter(key: u8, title: &str, summary: &str, exercises: &[Ex]) -> TrackChapter {
     TrackChapter {
-        id: format!("halmos-{}", number),
-        number,
+        id: format!("halmos-{}", key),
+        number: book_section(key),
         title: title.to_string(),
         summary: summary.to_string(),
-        axioms: axioms().into_iter().filter(|(ch, _)| *ch == number).map(|(_, a)| a).collect(),
-        exercises: exercises.iter().enumerate().map(|(i, e)| exercise(number, i + 1, e)).collect(),
+        axioms: axioms().into_iter().filter(|(ch, _)| *ch == key).map(|(_, a)| a).collect(),
+        exercises: exercises.iter().enumerate().map(|(i, e)| exercise(key, i + 1, e)).collect(),
     }
 }
 
@@ -125,7 +146,7 @@ use Difficulty::{Easy, Expert, Hard, Medium};
 /// The Halmos track, easy to hard within each chapter.
 pub fn halmos_track() -> Vec<TrackChapter> {
     vec![
-        chapter(0, "Predicate logic warm-up",
+        chapter(0, "Very Naive Set Theory, Functions, and Proofs",
             "The quantifier and identity rules on small examples: ∀E, ∀I, ∃I, ∃E, QN, =I, =E.",
             &[
                 Ex { title: "All F are G; a is F", level: Easy, premises: &["∀x(F(x) ⊃ G(x))", "F(a)"], conclusion: "G(a)",
@@ -265,7 +286,7 @@ pub fn halmos_track() -> Vec<TrackChapter> {
                 Ex { title: "Pairs of a and b are in a × b", level: Medium, premises: &["c ∈ a", "d ∈ b"], conclusion: "⟨c, d⟩ ∈ a × b",
                     hint: "Conj the premises with ⟨c, d⟩ = ⟨c, d⟩ (=I), then ∃I twice on the product, then fold with Def." },
             ]),
-        chapter(9, "Families of Sets",
+        chapter(9, "Families",
             "Unions of families: ⋃a collects the members of the members of a. Singletons and pairs of sets give back their members.",
             &[
                 Ex { title: "The union of a singleton", level: Medium, premises: &["@ext"], conclusion: "⋃{a} = a",
@@ -308,6 +329,19 @@ pub fn halmos_track() -> Vec<TrackChapter> {
                     premises: &["Ind(s)", "Ind(t)"], conclusion: "Ind(s ∩ t)",
                     hint: "Unfold both; ∅ ∈ s . ∅ ∈ t gives ∅ ∈ s ∩ t. For c ∈ s ∩ t, closure in s and in t, Conj, Def; ∀I; fold." },
             ]),
+        chapter(13, "Arithmetic",
+            "Addition defined by its two recursion clauses on w. Induction is assumed as a premise instance for each exercise, as the hints say; the instance is itself provable from the least-inductive-set premise and Specification.",
+            &[
+                Ex { title: "a + 0 = a", level: Easy, premises: &["@add0", "a ∈ w"], conclusion: "p(a, ∅) = a",
+                    hint: "∀E on the base clause at a, then MP with a ∈ w." },
+                Ex { title: "a + (b ∪ {b}) = (a + b) ∪ {a + b}", level: Medium, premises: &["@adds", "a ∈ w", "b ∈ w"],
+                    conclusion: "p(a, b ∪ {b}) = p(a, b) ∪ {p(a, b)}",
+                    hint: "∀E twice on the successor clause, Conj for the two hypotheses, MP." },
+                Ex { title: "∅ + a = a", level: Hard,
+                    premises: &["@add0", "@adds", "@nat", "p(∅, ∅) = ∅ . ∀x((x ∈ w . p(∅, x) = x) ⊃ p(∅, x ∪ {x}) = x ∪ {x}) ⊃ ∀a(a ∈ w ⊃ p(∅, a) = a)", "a ∈ w"],
+                    conclusion: "p(∅, a) = a",
+                    hint: "Assumed: the induction instance (premise 4, Peano induction for w, §14). Prove its base p(∅,∅)=∅ with the base clause, then its step with the successor clause and =E; MP with the instance." },
+            ]),
         chapter(15, "The Axiom of Choice",
             "Choice in its choice-set form: a disjoint family of nonempty sets has a set meeting each member once.",
             &[
@@ -316,7 +350,7 @@ pub fn halmos_track() -> Vec<TrackChapter> {
                     conclusion: "∃u ∀y(y ∈ a ⊃ ∃w ∀z(z ∈ y ∩ u ≡ z = w))",
                     hint: "∀E at a, Conj the two hypotheses, MP." },
             ]),
-        chapter(19, "Foundation (ZFC appendix)",
+        chapter(APPENDIX_KEY, "Foundation (appendix, not in Halmos)",
             "Halmos does not use Foundation; ZFC does. With it no set belongs to itself.",
             &[
                 Ex { title: "No set belongs to itself", level: Expert, premises: &["@found"], conclusion: "a ∉ a",

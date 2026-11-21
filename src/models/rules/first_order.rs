@@ -167,7 +167,7 @@ pub fn quantifier_negation_forms(f: &Formula) -> Vec<Formula> {
 ///
 /// t ∈ s × r :: ∃x∃y(x ∈ s . y ∈ r . t = ⟨x, y⟩)
 /// Fun(f, a, b) :: f ⊆ a × b . ∀x(x ∈ a ⊃ ∃y(⟨x, y⟩ ∈ f . ∀z(⟨x, z⟩ ∈ f ⊃ z = y)))
-///   (Halmos §8: f is a function from a to b. The predicate is an abbreviation, not syntax.)
+///   (Halmos §10: f is a function from a to b. The predicate is an abbreviation, not syntax.)
 pub fn definition_unfoldings(f: &Formula) -> Vec<Formula> {
     let mem = |a: &Term, b: &Term| Formula::Membership(a.clone(), b.clone());
     let id = |a: &Term, b: &Term| Formula::Identity(a.clone(), b.clone());
@@ -228,7 +228,7 @@ pub fn definition_unfoldings(f: &Formula) -> Vec<Formula> {
             ));
         }
         Formula::Predicate(name, args) if name == "Ind" && args.len() == 1 => {
-            // Ind(s) :: ∅ ∈ s . ∀x(x ∈ s ⊃ x ∪ {x} ∈ s): s is inductive (Halmos §12)
+            // Ind(s) :: ∅ ∈ s . ∀x(x ∈ s ⊃ x ∪ {x} ∈ s): s is inductive (Halmos §14)
             let se = &args[0];
             let mut used: std::collections::BTreeSet<String> = se.names();
             let x = Term::Name(fresh_avoiding(&mut used));
