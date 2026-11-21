@@ -25,6 +25,10 @@ pub enum EquivalenceRule {
     Tautology,
     // 18. Equivalence (Equiv): (p ≡ q) :: [(p ⊃ q) · (q ⊃ p)]
     Equivalence,
+    // Predicate logic: Quantifier Negation (QN): ~∀xφ :: ∃x~φ, ~∃xφ :: ∀x~φ
+    QuantifierNegation,
+    // Set theory: Definition (Def): unfold/fold ⊆, ∅, {a}, {a, b}, ∪, ∩, −, ℘, ⋃, ⟨a, b⟩
+    Definition,
 }
 
 impl EquivalenceRule {
@@ -40,6 +44,8 @@ impl EquivalenceRule {
             EquivalenceRule::Exportation => "Exportation",
             EquivalenceRule::Tautology => "Tautology",
             EquivalenceRule::Equivalence => "Equivalence",
+            EquivalenceRule::QuantifierNegation => "Quantifier Negation",
+            EquivalenceRule::Definition => "Definition",
         }
     }
 
@@ -55,6 +61,8 @@ impl EquivalenceRule {
             EquivalenceRule::Exportation => "Exp",
             EquivalenceRule::Tautology => "Taut",
             EquivalenceRule::Equivalence => "Equiv",
+            EquivalenceRule::QuantifierNegation => "QN",
+            EquivalenceRule::Definition => "Def",
         }
     }
 
@@ -64,6 +72,12 @@ impl EquivalenceRule {
         let mut results = Vec::new();
 
         match self {
+            EquivalenceRule::QuantifierNegation => {
+                return super::first_order::quantifier_negation_forms(formula);
+            }
+            EquivalenceRule::Definition => {
+                return super::first_order::definition_unfoldings(formula);
+            }
             EquivalenceRule::DeMorgan => {
                 // ~(P · Q) ≡ ~P ∨ ~Q (De Morgan for And)
                 if let Formula::Not(inner) = formula {
@@ -371,8 +385,19 @@ impl EquivalenceRule {
         }
 
         match formula {
-            Formula::Atom(_) | Formula::Contradiction => formula.clone(),
+            Formula::Atom(_)
+            | Formula::Contradiction
+            | Formula::Predicate(_, _)
+            | Formula::Identity(_, _)
+            | Formula::Membership(_, _)
+            | Formula::Subset(_, _) => formula.clone(),
             Formula::Not(inner) => Formula::Not(Box::new(
+                Self::replace_subformula(inner, target, replacement),
+            )),
+            Formula::ForAll(v, inner) => Formula::ForAll(v.clone(), Box::new(
+                Self::replace_subformula(inner, target, replacement),
+            )),
+            Formula::Exists(v, inner) => Formula::Exists(v.clone(), Box::new(
                 Self::replace_subformula(inner, target, replacement),
             )),
             Formula::And(left, right) => Formula::And(
@@ -392,6 +417,17 @@ impl EquivalenceRule {
                 Box::new(Self::replace_subformula(right, target, replacement)),
             ),
         }
+    }
+
+    /// Is this one of the predicate-logic / set-theory rules (not in `all()`)?
+    pub fn is_first_order(&self) -> bool {
+        matches!(self, EquivalenceRule::QuantifierNegation | EquivalenceRule::Definition)
+    }
+
+    /// The first-order equivalence rules, kept out of `all()` so propositional generation,
+    /// proving and seeded benchmarks are unchanged.
+    pub fn first_order() -> Vec<EquivalenceRule> {
+        vec![EquivalenceRule::QuantifierNegation, EquivalenceRule::Definition]
     }
 
     /// Get all equivalence rules (9-18 from rules.md)

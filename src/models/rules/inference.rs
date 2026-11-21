@@ -23,6 +23,17 @@ pub enum InferenceRule {
     ConstructiveDilemma,
     // 19. Contradiction (NegE): p, ~p ∴ ⊥
     Contradiction,
+    // Predicate logic (Fitch names; Hurley's in brackets)
+    // ∀E (UI): ∀x φ ∴ φ[t/x]
+    UniversalElimination,
+    // ∀I (UG): φ[c/x] ∴ ∀x φ, c arbitrary (in no premise or open assumption)
+    UniversalIntroduction,
+    // ∃I (EG): φ[t/x] ∴ ∃x φ
+    ExistentialIntroduction,
+    // =I: ∴ t = t
+    IdentityIntroduction,
+    // =E: a = b, φ ∴ φ with some a replaced by b
+    IdentityElimination,
 }
 
 impl InferenceRule {
@@ -37,6 +48,11 @@ impl InferenceRule {
             InferenceRule::Addition => "Addition",
             InferenceRule::ConstructiveDilemma => "Constructive Dilemma",
             InferenceRule::Contradiction => "Contradiction Introduction",
+            InferenceRule::UniversalElimination => "Universal Elimination",
+            InferenceRule::UniversalIntroduction => "Universal Introduction",
+            InferenceRule::ExistentialIntroduction => "Existential Introduction",
+            InferenceRule::IdentityIntroduction => "Identity Introduction",
+            InferenceRule::IdentityElimination => "Identity Elimination",
         }
     }
 
@@ -51,6 +67,11 @@ impl InferenceRule {
             InferenceRule::Addition => "Add",
             InferenceRule::ConstructiveDilemma => "CD",
             InferenceRule::Contradiction => "NegE",
+            InferenceRule::UniversalElimination => "∀E",
+            InferenceRule::UniversalIntroduction => "∀I",
+            InferenceRule::ExistentialIntroduction => "∃I",
+            InferenceRule::IdentityIntroduction => "=I",
+            InferenceRule::IdentityElimination => "=E",
         }
     }
 
@@ -66,6 +87,11 @@ impl InferenceRule {
             InferenceRule::Addition => 1,
             InferenceRule::ConstructiveDilemma => 3,
             InferenceRule::Contradiction => 2,
+            InferenceRule::UniversalElimination => 1,
+            InferenceRule::UniversalIntroduction => 1,
+            InferenceRule::ExistentialIntroduction => 1,
+            InferenceRule::IdentityIntroduction => 0,
+            InferenceRule::IdentityElimination => 2,
         }
     }
 
@@ -219,6 +245,15 @@ impl InferenceRule {
                     }
                 }
             }
+
+            // The quantifier and identity rules have unboundedly many conclusions (any
+            // term may be chosen); they are checked against a given conclusion by
+            // `check_first_order`, never enumerated.
+            InferenceRule::UniversalElimination
+            | InferenceRule::UniversalIntroduction
+            | InferenceRule::ExistentialIntroduction
+            | InferenceRule::IdentityIntroduction
+            | InferenceRule::IdentityElimination => {}
         }
 
         results
@@ -231,7 +266,59 @@ impl InferenceRule {
 
     /// Verify that the conclusion follows from the premises using this rule
     pub fn verify(&self, premises: &[&Formula], conclusion: &Formula, additional: Option<&Formula>) -> bool {
-        self.all_conclusions(premises, additional).contains(conclusion)
+        match self.check_first_order(premises, conclusion) {
+            Some(result) => result.is_ok(),
+            None => self.all_conclusions(premises, additional).contains(conclusion),
+        }
+    }
+
+    /// Is this one of the predicate-logic rules (not in `all()`)?
+    pub fn is_first_order(&self) -> bool {
+        matches!(
+            self,
+            InferenceRule::UniversalElimination
+                | InferenceRule::UniversalIntroduction
+                | InferenceRule::ExistentialIntroduction
+                | InferenceRule::IdentityIntroduction
+                | InferenceRule::IdentityElimination
+        )
+    }
+
+    /// The predicate-logic rules, kept out of `all()` so propositional generation and
+    /// proving are unchanged.
+    pub fn first_order() -> Vec<InferenceRule> {
+        vec![
+            InferenceRule::UniversalElimination,
+            InferenceRule::UniversalIntroduction,
+            InferenceRule::ExistentialIntroduction,
+            InferenceRule::IdentityIntroduction,
+            InferenceRule::IdentityElimination,
+        ]
+    }
+
+    /// Structural check of a quantifier/identity rule application, with the reason on
+    /// failure. `None` for propositional rules. For ∀I the arbitrariness of the generalized
+    /// name is a proof-context condition checked by the verifier.
+    pub fn check_first_order(&self, premises: &[&Formula], conclusion: &Formula) -> Option<Result<(), String>> {
+        use super::first_order as fo;
+        let one = |f: fn(&Formula, &Formula) -> Result<(), String>| match premises {
+            [p] => f(p, conclusion),
+            _ => Err(format!("{} cites exactly one line", self.abbreviation())),
+        };
+        Some(match self {
+            InferenceRule::UniversalElimination => one(fo::universal_elimination),
+            InferenceRule::ExistentialIntroduction => one(fo::existential_introduction),
+            InferenceRule::UniversalIntroduction => one(|p, c| fo::universal_introduction(p, c).map(|_| ())),
+            InferenceRule::IdentityIntroduction => {
+                if premises.is_empty() {
+                    fo::identity_introduction(conclusion)
+                } else {
+                    Err("=I cites no lines".to_string())
+                }
+            }
+            InferenceRule::IdentityElimination => fo::identity_elimination(premises, conclusion),
+            _ => return None,
+        })
     }
 
     /// Get all inference rules

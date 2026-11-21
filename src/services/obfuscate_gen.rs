@@ -177,6 +177,7 @@ fn node_count(formula: &Formula) -> usize {
         Formula::And(l, r) | Formula::Or(l, r) | Formula::Implies(l, r) | Formula::Biconditional(l, r) => {
             1 + node_count(l) + node_count(r)
         }
+        other => crate::models::first_order::propositional_only(other),
     }
 }
 
@@ -925,6 +926,7 @@ impl ObfuscateGenerator {
                 paths.extend(Self::collect_leaf_paths(r, &rp));
                 paths
             }
+            other => crate::models::first_order::propositional_only(other),
         }
     }
 
@@ -996,6 +998,7 @@ impl ObfuscateGenerator {
                 )
             }
             Formula::Contradiction => Formula::Contradiction,
+            other => crate::models::first_order::propositional_only(other),
         }
     }
 

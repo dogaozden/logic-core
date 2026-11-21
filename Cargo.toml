@@ -1,8 +1,8 @@
 [package]
 name = "logic-core"
-version = "0.3.4"
+version = "0.4.0"
 edition = "2021"
-description = "Propositional logic proof engine: formulas, natural-deduction rules, verification, and theorem generation"
+description = "Propositional and predicate logic proof engine: formulas, natural-deduction rules, verification, and theorem generation"
 license = "MIT"
 repository = "https://github.com/dogaozden/logic-core"
 

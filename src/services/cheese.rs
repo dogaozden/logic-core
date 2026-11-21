@@ -91,6 +91,7 @@ fn dyn_table_over(formula: &Formula, index: &HashMap<&str, u8>, num_vars: u8) ->
             dyn_table_over(l, index, num_vars).biconditional(&dyn_table_over(r, index, num_vars))
         }
         Formula::Contradiction => DynTruthTable::contradiction(num_vars),
+        other => crate::models::first_order::propositional_only(other),
     }
 }
 

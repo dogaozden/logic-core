@@ -391,6 +391,8 @@ fn weighted_pick_rule(rng: &mut StdRng) -> InferenceRule {
             Conjunction | Addition | Simplification | ModusPonens => 1.5,
             ModusTollens | DisjunctiveSyllogism | HypotheticalSyllogism => 1.0,
             ConstructiveDilemma | Contradiction => 0.4,
+            UniversalElimination | UniversalIntroduction | ExistentialIntroduction | IdentityIntroduction
+            | IdentityElimination => unreachable!("InferenceRule::all() is propositional"),
         })
         .collect();
     rules[weighted_pick_index(&weights, rng)]

@@ -28,6 +28,12 @@ pub enum Justification {
         subproof_start: usize,
         subproof_end: usize,
     },
+    /// ∃E: the existential line and the subproof that instantiates it
+    ExistentialElimination {
+        existential_line: usize,
+        subproof_start: usize,
+        subproof_end: usize,
+    },
 }
 
 impl Justification {
@@ -55,6 +61,11 @@ impl Justification {
             } => {
                 format!("{} {}-{}", technique.abbreviation(), subproof_start, subproof_end)
             }
+            Justification::ExistentialElimination {
+                existential_line,
+                subproof_start,
+                subproof_end,
+            } => format!("∃E {}, {}-{}", existential_line, subproof_start, subproof_end),
         }
     }
 
@@ -69,6 +80,11 @@ impl Justification {
                 subproof_end,
                 ..
             } => vec![*subproof_start, *subproof_end],
+            Justification::ExistentialElimination {
+                existential_line,
+                subproof_start,
+                subproof_end,
+            } => vec![*existential_line, *subproof_start, *subproof_end],
         }
     }
 }
@@ -201,25 +217,45 @@ impl Proof {
         // The conclusion goes at the parent scope level
         let end_line = self.next_line_number();
 
+        let justification = match technique {
+            ProofTechnique::ExistentialElimination => Justification::ExistentialElimination {
+                existential_line: self.existential_line_for(&scope.assumption, subproof_start)?,
+                subproof_start,
+                subproof_end: end_line - 1,
+            },
+            _ => Justification::SubproofConclusion {
+                technique,
+                subproof_start,
+                subproof_end: end_line - 1,
+            },
+        };
+
         // Close the scope first
         self.scope_manager.close_scope(end_line - 1);
 
         let depth = self.current_depth();
         let scope_id = self.scope_manager.current_scope_id();
 
-        let line = ProofLine::new(
-            end_line,
-            conclusion,
-            Justification::SubproofConclusion {
-                technique,
-                subproof_start,
-                subproof_end: end_line - 1,
-            },
-            depth,
-            scope_id,
-        );
+        let line = ProofLine::new(end_line, conclusion, justification, depth, scope_id);
         self.lines.push(line);
         Some(self.lines.last().expect("line was just pushed"))
+    }
+
+    /// The latest line ∃x φ accessible from `assumption_line` of which `assumption` is an
+    /// instance: the line an ∃E subproof starting there instantiates.
+    pub fn existential_line_for(&self, assumption: &Formula, assumption_line: usize) -> Option<usize> {
+        self.lines
+            .iter()
+            .rev()
+            .filter(|l| l.line_number < assumption_line && l.is_valid)
+            .filter(|l| self.is_line_accessible(assumption_line, l.line_number))
+            .find(|l| match &l.formula {
+                Formula::Exists(x, body) => {
+                    crate::models::rules::first_order::instance_of(x, body, assumption).is_ok()
+                }
+                _ => false,
+            })
+            .map(|l| l.line_number)
     }
 
     pub fn remove_last_line(&mut self) -> Option<ProofLine> {
@@ -257,7 +293,7 @@ impl Proof {
 
         let conclusion = &self.theorem.conclusion;
         let has_conclusion = self.lines.iter().any(|l| {
-            l.depth == 0 && l.formula == *conclusion && l.is_valid
+            l.depth == 0 && l.formula.alpha_eq(conclusion) && l.is_valid
         });
 
         let all_valid = self.lines.iter().all(|l| l.is_valid);

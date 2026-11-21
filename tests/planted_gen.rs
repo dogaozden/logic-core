@@ -720,6 +720,7 @@ fn table_over(f: &Formula, index: &std::collections::HashMap<&str, u8>, num_vars
             table_over(l, index, num_vars).biconditional(&table_over(r, index, num_vars))
         }
         Formula::Contradiction => DynTruthTable::contradiction(num_vars),
+        other => logic_core::models::first_order::propositional_only(other),
     }
 }
 

@@ -147,6 +147,7 @@ fn eval_dyn(formula: &Formula, var_map: &std::collections::HashMap<&str, u8>, nu
         Formula::Implies(l, r) => eval_dyn(l, var_map, num_vars).implies(&eval_dyn(r, var_map, num_vars)),
         Formula::Biconditional(l, r) => eval_dyn(l, var_map, num_vars).biconditional(&eval_dyn(r, var_map, num_vars)),
         Formula::Contradiction => DynTruthTable::contradiction(num_vars),
+        other => crate::models::first_order::propositional_only(other),
     }
 }
 
@@ -185,6 +186,7 @@ pub fn compute_truth_table(formula: &Formula) -> u32 {
         Formula::Implies(l, r) => (!compute_truth_table(l) | compute_truth_table(r)) & MASK_32,
         Formula::Biconditional(l, r) => !(compute_truth_table(l) ^ compute_truth_table(r)) & MASK_32,
         Formula::Contradiction => CONTRADICTION,
+        other => crate::models::first_order::propositional_only(other),
     }
 }
 

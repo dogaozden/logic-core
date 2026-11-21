@@ -621,6 +621,7 @@ fn eval_u64(f: &Formula, var_pairs: &[(&str, u64)]) -> u64 {
         Formula::Implies(l, r) => !eval_u64(l, var_pairs) | eval_u64(r, var_pairs),
         Formula::Biconditional(l, r) => !(eval_u64(l, var_pairs) ^ eval_u64(r, var_pairs)),
         Formula::Contradiction => 0u64,
+        other => crate::models::first_order::propositional_only(other),
     }
 }
 
@@ -655,6 +656,7 @@ fn eval_bool(f: &Formula, values: &HashMap<&str, bool>) -> bool {
         Formula::Implies(l, r) => !eval_bool(l, values) || eval_bool(r, values),
         Formula::Biconditional(l, r) => eval_bool(l, values) == eval_bool(r, values),
         Formula::Contradiction => false,
+        other => crate::models::first_order::propositional_only(other),
     }
 }
 

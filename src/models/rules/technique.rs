@@ -12,6 +12,10 @@ pub enum ProofTechnique {
     /// - Assume ~P, derive contradiction, conclude P
     /// - Assume P, derive contradiction, conclude ~P
     IndirectProof,
+
+    /// Existential Elimination (∃E, Hurley's EI as a subproof):
+    /// from ∃x φ, assume φ[c/x] for a fresh name c, derive ψ (without c), conclude ψ
+    ExistentialElimination,
 }
 
 /// Check if a formula represents a contradiction (⊥ or P · ~P)
@@ -43,6 +47,7 @@ impl ProofTechnique {
         match self {
             ProofTechnique::ConditionalProof => "Conditional Proof",
             ProofTechnique::IndirectProof => "Indirect Proof",
+            ProofTechnique::ExistentialElimination => "Existential Elimination",
         }
     }
 
@@ -50,6 +55,7 @@ impl ProofTechnique {
         match self {
             ProofTechnique::ConditionalProof => "CP",
             ProofTechnique::IndirectProof => "IP",
+            ProofTechnique::ExistentialElimination => "∃E",
         }
     }
 
@@ -62,6 +68,10 @@ impl ProofTechnique {
             ProofTechnique::IndirectProof => {
                 "Assume P or ~P, derive a contradiction (⊥ or Q · ~Q), \
                  then conclude the opposite of your assumption."
+            }
+            ProofTechnique::ExistentialElimination => {
+                "From ∃x φ, assume φ with a new name c in place of x, derive ψ \
+                 (not mentioning c), then conclude ψ outside the subproof."
             }
         }
     }
@@ -76,6 +86,7 @@ impl ProofTechnique {
                     Box::new(derived.clone()),
                 ))
             }
+            ProofTechnique::ExistentialElimination => Some(derived.clone()),
             ProofTechnique::IndirectProof => {
                 // Must derive a contradiction (⊥ or P · ~P)
                 if !is_contradiction(derived) {
@@ -126,6 +137,7 @@ impl ProofTechnique {
             ProofTechnique::ConditionalProof => AssumptionType::Any,
             // IP accepts any assumption - it will negate whatever you assumed
             ProofTechnique::IndirectProof => AssumptionType::Any,
+            ProofTechnique::ExistentialElimination => AssumptionType::Any,
         }
     }
 }

@@ -1,5 +1,5 @@
 use crate::models::{
-    Formula, Proof, ProofLine, Justification,
+    Formula, Proof, ProofLine, Justification, Term,
     rules::{InferenceRule, EquivalenceRule, ProofTechnique},
 };
 
@@ -54,6 +54,153 @@ impl ProofVerifier {
                 *subproof_end,
                 proof,
             ),
+            Justification::ExistentialElimination {
+                existential_line,
+                subproof_start,
+                subproof_end,
+            } => Self::verify_existential_elimination(
+                line,
+                *existential_line,
+                *subproof_start,
+                *subproof_end,
+                proof,
+            ),
+        }
+    }
+
+    fn result(r: Result<(), String>) -> VerificationResult {
+        match r {
+            Ok(()) => VerificationResult::valid(),
+            Err(message) => VerificationResult::invalid(message),
+        }
+    }
+
+    /// Lines whose formulas are in force at `line_number`: the premises and the assumptions
+    /// of every subproof still open there.
+    fn assumptions_in_force(proof: &Proof, line_number: usize) -> Vec<&ProofLine> {
+        let mut out: Vec<&ProofLine> = proof
+            .lines
+            .iter()
+            .filter(|l| matches!(l.justification, Justification::Premise))
+            .collect();
+        for scope in proof.scope_manager.all_scopes() {
+            if scope.contains_line(line_number) {
+                if let Some(l) = proof.get_line(scope.start_line) {
+                    if l.line_number != line_number {
+                        out.push(l);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The name must not occur free in any premise or open assumption at `line_number`.
+    fn name_is_arbitrary(proof: &Proof, line_number: usize, name: &str, rule: &str) -> Result<(), String> {
+        for l in Self::assumptions_in_force(proof, line_number) {
+            if l.formula.has_free_name(name) {
+                let what = match l.justification {
+                    Justification::Premise => "premise",
+                    _ => "open assumption",
+                };
+                return Err(format!(
+                    "{} needs a name that is arbitrary, but {} occurs in the {} on line {}",
+                    rule, name, what, l.line_number
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_existential_elimination(
+        line: &ProofLine,
+        existential_line: usize,
+        subproof_start: usize,
+        subproof_end: usize,
+        proof: &Proof,
+    ) -> VerificationResult {
+        Self::result(Self::check_existential_elimination(line, existential_line, subproof_start, subproof_end, proof))
+    }
+
+    fn check_existential_elimination(
+        line: &ProofLine,
+        existential_line: usize,
+        subproof_start: usize,
+        subproof_end: usize,
+        proof: &Proof,
+    ) -> Result<(), String> {
+        let start = proof
+            .get_line(subproof_start)
+            .ok_or(format!("Subproof start line {} does not exist", subproof_start))?;
+        let end = proof
+            .get_line(subproof_end)
+            .ok_or(format!("Subproof end line {} does not exist", subproof_end))?;
+        match start.justification {
+            Justification::Assumption { technique: ProofTechnique::ExistentialElimination } => {}
+            _ => return Err(format!("Line {} is not an ∃E assumption", subproof_start)),
+        }
+        if !proof.scope_manager.is_subproof_accessible(line.line_number, subproof_start, subproof_end) {
+            return Err(format!(
+                "Subproof lines {}-{} are not accessible from line {}",
+                subproof_start, subproof_end, line.line_number
+            ));
+        }
+        if existential_line >= subproof_start || !proof.is_line_accessible(line.line_number, existential_line) {
+            return Err(format!("Line {} is not accessible from line {}", existential_line, line.line_number));
+        }
+        let ex = proof
+            .get_line(existential_line)
+            .ok_or(format!("Referenced line {} does not exist", existential_line))?;
+        if !ex.is_valid {
+            return Err(format!("Referenced line {} is invalid", existential_line));
+        }
+        let (var, body) = match &ex.formula {
+            Formula::Exists(var, body) => (var, body),
+            _ => return Err(format!("∃E cites an existential line (∃x …); line {} is not one", existential_line)),
+        };
+        let witness = Self::existential_witness(var, body, &start.formula, existential_line)?;
+        if !end.formula.alpha_eq(&line.formula) {
+            return Err(format!(
+                "∃E concludes the last line of the subproof ({}), not {}",
+                end.formula.display_string(),
+                line.formula.display_string()
+            ));
+        }
+        if let Some(c) = witness {
+            if line.formula.has_free_name(&c) {
+                return Err(format!(
+                    "The new name {} escapes its ∃E subproof: it occurs in the conclusion {}",
+                    c,
+                    line.formula.display_string()
+                ));
+            }
+            Self::name_is_arbitrary(proof, line.line_number, &c, "∃E")?;
+        }
+        Ok(())
+    }
+
+    /// The assumption of an ∃E subproof must be φ[c/x] for a name c not in ∃x φ.
+    fn existential_witness(var: &str, body: &Formula, assumption: &Formula, existential_line: usize) -> Result<Option<String>, String> {
+        let exists = Formula::Exists(var.to_string(), Box::new(body.clone()));
+        match crate::models::rules::first_order::instance_of(var, body, assumption)? {
+            None => Ok(None),
+            Some(Term::Name(c)) => {
+                if exists.has_free_name(&c) {
+                    Err(format!(
+                        "The ∃E assumption must use a new name, but {} already occurs in line {} ({})",
+                        c,
+                        existential_line,
+                        exists.display_string()
+                    ))
+                } else {
+                    Ok(Some(c))
+                }
+            }
+            Some(t) => Err(format!(
+                "The ∃E assumption must put a new name for {}, not the compound term {}",
+                var,
+                t.display_string()
+            )),
         }
     }
 
@@ -67,13 +214,30 @@ impl ProofVerifier {
     }
 
     fn verify_assumption(
-        _line: &ProofLine,
-        _technique: ProofTechnique,
-        _proof: &Proof,
+        line: &ProofLine,
+        technique: ProofTechnique,
+        proof: &Proof,
     ) -> VerificationResult {
-        // Assumptions are always valid when opening a subproof
-        // The technique just indicates the purpose
-        VerificationResult::valid()
+        // CP and IP may assume anything. An ∃E assumption instantiates an accessible
+        // existential line with a name that is new there.
+        match technique {
+            ProofTechnique::ExistentialElimination => Self::result(Self::check_existential_assumption(line, proof)),
+            ProofTechnique::ConditionalProof | ProofTechnique::IndirectProof => VerificationResult::valid(),
+        }
+    }
+
+    fn check_existential_assumption(line: &ProofLine, proof: &Proof) -> Result<(), String> {
+        let existential_line = proof.existential_line_for(&line.formula, line.line_number).ok_or(format!(
+            "An ∃E assumption instantiates an earlier line ∃x φ, putting a new name for x; {} is not such an instance of any accessible line",
+            line.formula.display_string()
+        ))?;
+        let ex = proof.get_line(existential_line).ok_or(format!("Line {} does not exist", existential_line))?;
+        if let Formula::Exists(var, body) = &ex.formula {
+            if let Some(c) = Self::existential_witness(var, body, &line.formula, existential_line)? {
+                Self::name_is_arbitrary(proof, line.line_number, &c, "∃E")?;
+            }
+        }
+        Ok(())
     }
 
     fn verify_inference(
@@ -126,6 +290,18 @@ impl ProofVerifier {
                     ));
                 }
             }
+        }
+
+        if let Some(check) = rule.check_first_order(&premises, &line.formula) {
+            if let Err(message) = check {
+                return VerificationResult::invalid(message);
+            }
+            if rule == InferenceRule::UniversalIntroduction {
+                if let Ok(Some(c)) = crate::models::rules::first_order::universal_introduction(premises[0], &line.formula) {
+                    return Self::result(Self::name_is_arbitrary(proof, line.line_number, &c, "∀I"));
+                }
+            }
+            return VerificationResult::valid();
         }
 
         // Apply the rule and check if the conclusion matches
@@ -265,10 +441,29 @@ impl ProofVerifier {
                 Box::new(Self::to_lowercase_formula(right)),
             ),
             Formula::Contradiction => Formula::Contradiction,
+            Formula::ForAll(v, inner) => Formula::ForAll(v.clone(), Box::new(Self::to_lowercase_formula(inner))),
+            Formula::Exists(v, inner) => Formula::Exists(v.clone(), Box::new(Self::to_lowercase_formula(inner))),
+            Formula::Predicate(_, _)
+            | Formula::Identity(_, _)
+            | Formula::Membership(_, _)
+            | Formula::Subset(_, _) => formula.clone(),
         }
     }
 
     fn is_valid_equivalence_application(source: &Formula, target: &Formula, rule: EquivalenceRule) -> bool {
+        if rule.is_first_order() {
+            // Replacement anywhere, compared up to bound-variable names; Def is checked in
+            // both directions (unfolding one way is folding the other).
+            let rewrites = |from: &Formula, to: &Formula| {
+                from.subformulas().iter().any(|sub| {
+                    rule.equivalent_forms(sub).iter().any(|eq| {
+                        Self::replace_subformula(from, sub, eq).alpha_eq(to)
+                    })
+                })
+            };
+            return rewrites(source, target)
+                || (rule == EquivalenceRule::Definition && rewrites(target, source));
+        }
         // First check if the transformation applies at the top level
         let top_level_forms = rule.equivalent_forms(source);
         if top_level_forms.contains(target) {
@@ -294,32 +489,7 @@ impl ProofVerifier {
     }
 
     fn replace_subformula(formula: &Formula, target: &Formula, replacement: &Formula) -> Formula {
-        if formula == target {
-            return replacement.clone();
-        }
-
-        match formula {
-            Formula::Atom(_) | Formula::Contradiction => formula.clone(),
-            Formula::Not(inner) => {
-                Formula::Not(Box::new(Self::replace_subformula(inner, target, replacement)))
-            }
-            Formula::And(left, right) => Formula::And(
-                Box::new(Self::replace_subformula(left, target, replacement)),
-                Box::new(Self::replace_subformula(right, target, replacement)),
-            ),
-            Formula::Or(left, right) => Formula::Or(
-                Box::new(Self::replace_subformula(left, target, replacement)),
-                Box::new(Self::replace_subformula(right, target, replacement)),
-            ),
-            Formula::Implies(left, right) => Formula::Implies(
-                Box::new(Self::replace_subformula(left, target, replacement)),
-                Box::new(Self::replace_subformula(right, target, replacement)),
-            ),
-            Formula::Biconditional(left, right) => Formula::Biconditional(
-                Box::new(Self::replace_subformula(left, target, replacement)),
-                Box::new(Self::replace_subformula(right, target, replacement)),
-            ),
-        }
+        EquivalenceRule::replace_subformula(formula, target, replacement)
     }
 
     fn verify_subproof_conclusion(
@@ -360,6 +530,10 @@ impl ProofVerifier {
                 ));
             }
         };
+
+        if technique == ProofTechnique::ExistentialElimination {
+            return VerificationResult::invalid("∃E cites the existential line as well as the subproof");
+        }
 
         // Check the technique matches
         if assumption_technique != technique {
