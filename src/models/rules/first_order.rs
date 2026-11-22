@@ -316,6 +316,27 @@ pub fn definition_unfoldings(f: &Formula) -> Vec<Formula> {
                 )),
             ));
         }
+        Formula::Predicate(name, args) if name == "Chain" && args.len() == 1 => {
+            // Chain(c) :: any two members of c are ⊆-comparable (Halmos §15, Zorn's lemma)
+            let ce = &args[0];
+            let mut used: std::collections::BTreeSet<String> = ce.names();
+            let x = Term::Name(fresh_avoiding(&mut used));
+            let y = Term::Name(fresh_avoiding(&mut used));
+            let comparable = Formula::Or(
+                Box::new(Formula::Subset(x.clone(), y.clone())),
+                Box::new(Formula::Subset(y.clone(), x.clone())),
+            );
+            out.push(Formula::ForAll(
+                x.display_string(),
+                Box::new(Formula::ForAll(
+                    y.display_string(),
+                    Box::new(Formula::Implies(
+                        Box::new(Formula::And(Box::new(mem(&x, ce)), Box::new(mem(&y, ce)))),
+                        Box::new(comparable),
+                    )),
+                )),
+            ));
+        }
         Formula::Subset(t, s) => {
             let x = Term::Name(fresh(&[t, s]));
             out.push(Formula::ForAll(
