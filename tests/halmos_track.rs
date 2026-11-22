@@ -605,6 +605,14 @@ fn solutions() -> BTreeMap<&'static str, Vec<&'static str>> {
         "∃m(m ∈ a . ∀y(y ∈ a ⊃ (m ⊆ y ⊃ m = y))) :: ∃I 11",
         "<∃E ∃m(m ∈ a . ∀y(y ∈ a ⊃ (m ⊆ y ⊃ m = y)))",
     ]);
+    m.insert("halmos-16-1", vec!["∃r WellOrd(r, a) :: ∀E 1"]);
+    m.insert("halmos-16-2", vec![
+        "r ⊆ a × a . ∀u∀v((u ∈ a . v ∈ a) ⊃ (⟨u, v⟩ ∈ r ∨ u = v ∨ ⟨v, u⟩ ∈ r)) . ∀k((k ⊆ a . ∃t(t ∈ k)) ⊃ ∃z(z ∈ k . ∀t(t ∈ k ⊃ (t = z ∨ ⟨z, t⟩ ∈ r)))) :: Def 1",
+        "∀k((k ⊆ a . ∃t(t ∈ k)) ⊃ ∃z(z ∈ k . ∀t(t ∈ k ⊃ (t = z ∨ ⟨z, t⟩ ∈ r)))) :: Simp 4",
+        "(s ⊆ a . ∃t(t ∈ s)) ⊃ ∃z(z ∈ s . ∀t(t ∈ s ⊃ (t = z ∨ ⟨z, t⟩ ∈ r))) :: ∀E 5",
+        "s ⊆ a . ∃t(t ∈ s) :: Conj 2,3",
+        "∃z(z ∈ s . ∀t(t ∈ s ⊃ (t = z ∨ ⟨z, t⟩ ∈ r))) :: MP 6,7",
+    ]);
     // Chapter 19
     m.insert("halmos-19-1", vec![
         "∃y(y ∈ {a}) ⊃ ∃y(y ∈ {a} . ~∃z(z ∈ y . z ∈ {a})) :: ∀E 1", "a = a :: =I", "a ∈ {a} :: Def 3",
@@ -641,7 +649,7 @@ fn chapters_are_in_halmos_order_and_axioms_appear_once() {
     assert_eq!(numbers, sorted, "sections ascend, the appendix (None) last");
     assert!(numbers.iter().flatten().all(|n| *n <= 21), "every section is one Halmos section (1–21)");
     let ids: Vec<String> = track.iter().flat_map(|c| c.axioms.iter().map(|a| a.id.clone())).collect();
-    assert_eq!(ids.len(), 14);
+    assert_eq!(ids.len(), 15);
     for ch in &track {
         for ex in &ch.exercises {
             for ax in &ex.axioms {

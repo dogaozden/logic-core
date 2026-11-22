@@ -337,6 +337,38 @@ pub fn definition_unfoldings(f: &Formula) -> Vec<Formula> {
                 )),
             ));
         }
+        Formula::Predicate(name, args) if name == "WellOrd" && args.len() == 2 => {
+            // WellOrd(r, x) :: r is a well-ordering of x (Halmos §18): r ⊆ x×x, linear on x,
+            // and every nonempty subset s of x has an r-least member.
+            let (re, xe) = (&args[0], &args[1]);
+            let mut used: std::collections::BTreeSet<String> = args.iter().flat_map(|t| t.names()).collect();
+            let u = Term::Name(fresh_avoiding(&mut used)).display_string();
+            let v = Term::Name(fresh_avoiding(&mut used)).display_string();
+            let s = Term::Name(fresh_avoiding(&mut used)).display_string();
+            let t = Term::Name(fresh_avoiding(&mut used)).display_string();
+            let l = Term::Name(fresh_avoiding(&mut used)).display_string();
+            let (re, xe) = (re.display_string(), xe.display_string());
+            let text = format!(
+                "{re} ⊆ {xe} × {xe} . ∀{u}∀{v}(({u} ∈ {xe} . {v} ∈ {xe}) ⊃ (⟨{u}, {v}⟩ ∈ {re} ∨ {u} = {v} ∨ ⟨{v}, {u}⟩ ∈ {re})) . ∀{s}(({s} ⊆ {xe} . ∃{t}({t} ∈ {s})) ⊃ ∃{l}({l} ∈ {s} . ∀{t}({t} ∈ {s} ⊃ ({t} = {l} ∨ ⟨{l}, {t}⟩ ∈ {re}))))"
+            );
+            out.push(Formula::parse(&text).expect("WellOrd unfolding is well formed"));
+        }
+        Formula::Predicate(name, args) if name == "Ord" && args.len() == 1 => {
+            // Ord(a) :: a is an ordinal (Halmos §19): a is transitive, linearly ordered by ∈,
+            // and every nonempty subset of a has an ∈-least member.
+            let ae = args[0].display_string();
+            let mut used: std::collections::BTreeSet<String> = args[0].names();
+            let x = Term::Name(fresh_avoiding(&mut used)).display_string();
+            let u = Term::Name(fresh_avoiding(&mut used)).display_string();
+            let v = Term::Name(fresh_avoiding(&mut used)).display_string();
+            let s = Term::Name(fresh_avoiding(&mut used)).display_string();
+            let t = Term::Name(fresh_avoiding(&mut used)).display_string();
+            let l = Term::Name(fresh_avoiding(&mut used)).display_string();
+            let text = format!(
+                "∀{x}({x} ∈ {ae} ⊃ {x} ⊆ {ae}) . ∀{u}∀{v}(({u} ∈ {ae} . {v} ∈ {ae}) ⊃ ({u} ∈ {v} ∨ {u} = {v} ∨ {v} ∈ {u})) . ∀{s}(({s} ⊆ {ae} . ∃{t}({t} ∈ {s})) ⊃ ∃{l}({l} ∈ {s} . ∀{t}({t} ∈ {s} ⊃ ~({t} ∈ {l}))))"
+            );
+            out.push(Formula::parse(&text).expect("Ord unfolding is well formed"));
+        }
         Formula::Subset(t, s) => {
             let x = Term::Name(fresh(&[t, s]));
             out.push(Formula::ForAll(
