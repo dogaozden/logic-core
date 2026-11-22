@@ -395,6 +395,12 @@ pub fn halmos_track() -> Vec<TrackChapter> {
                 Ex { title: "Membership cycle a∈b∈a gives a∈a", level: Medium, premises: &["Ord(a)", "a ∈ b", "b ∈ a"], conclusion: "a ∈ a",
                     hint: "Ord(a) makes a transitive: b ∈ a gives b ⊆ a. Then a ∈ b puts a in a. Unfold Def and use the transitivity clause of Ord(a)." },
             ]),
+        chapter(18, "Transfinite Induction",
+            "Halmos §20: if a property holds of an ordinal whenever it holds of all its elements, it holds of every ordinal. The induction instance is the premise; exercises give the instance they need.",
+            &[
+                Ex { title: "Induction on ordinals: a ∉ a", level: Medium, premises: &["(∀a((Ord(a) . ∀x(x ∈ a ⊃ ~(x ∈ x))) ⊃ ~(a ∈ a))) ⊃ ∀a(Ord(a) ⊃ ~(a ∈ a))"], conclusion: "∀a(Ord(a) ⊃ ~(a ∈ a))",
+                    hint: "The premise is the induction instance for P(x) := x ∉ x. Prove its inductive step: assume Ord(a) and every x in a has x ∉ x; if a ∈ a, the hypothesis at x = a gives a ∉ a. Then ∀I and MP." },
+            ]),
         chapter(APPENDIX_KEY, "Foundation (appendix, not in Halmos)",
             "Halmos does not use Foundation; ZFC does. With it no set belongs to itself.",
             &[

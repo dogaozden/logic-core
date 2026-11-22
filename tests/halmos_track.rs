@@ -643,6 +643,18 @@ fn solutions() -> BTreeMap<&'static str, Vec<&'static str>> {
         "<IP a ∉ a",
     ]);
     // Chapter 19
+    m.insert("halmos-18-1", vec![
+        "CP> (Ord(a) . ∀x(x ∈ a ⊃ ~(x ∈ x)))",
+        "∀x(x ∈ a ⊃ ~(x ∈ x)) :: Simp 2",
+        "IP> a ∈ a",
+        "a ∈ a ⊃ ~(a ∈ a) :: ∀E 3",
+        "~(a ∈ a) :: MP 5,4",
+        "⊥ :: NegE 4,6",
+        "<IP ~(a ∈ a)",
+        "<CP (Ord(a) . ∀x(x ∈ a ⊃ ~(x ∈ x))) ⊃ ~(a ∈ a)",
+        "∀a((Ord(a) . ∀x(x ∈ a ⊃ ~(x ∈ x))) ⊃ ~(a ∈ a)) :: ∀I 9",
+        "∀a(Ord(a) ⊃ ~(a ∈ a)) :: MP 1,10",
+    ]);
     m.insert("halmos-17-2", vec![
         "∀x(x ∈ a ⊃ x ⊆ a) . ∀u∀v((u ∈ a . v ∈ a) ⊃ (u ∈ v ∨ u = v ∨ v ∈ u)) . ∀s((s ⊆ a . ∃t(t ∈ s)) ⊃ ∃l(l ∈ s . ∀t(t ∈ s ⊃ ~(t ∈ l)))) :: Def 1",
         "∀x(x ∈ a ⊃ x ⊆ a) . ∀u∀v((u ∈ a . v ∈ a) ⊃ (u ∈ v ∨ u = v ∨ v ∈ u)) :: Simp 4",
