@@ -392,6 +392,8 @@ pub fn halmos_track() -> Vec<TrackChapter> {
             &[
                 Ex { title: "An ordinal is not a member of itself", level: Medium, premises: &["Ord(a)"], conclusion: "a ∉ a",
                     hint: "IP: assume a ∈ a. Def unfolds Ord(a); take the subset {a} of a, which has a least member l; l = a, but a ∈ l is false, so a ∉ a. Use Def for the singleton." },
+                Ex { title: "Membership cycle a∈b∈a gives a∈a", level: Medium, premises: &["Ord(a)", "a ∈ b", "b ∈ a"], conclusion: "a ∈ a",
+                    hint: "Ord(a) makes a transitive: b ∈ a gives b ⊆ a. Then a ∈ b puts a in a. Unfold Def and use the transitivity clause of Ord(a)." },
             ]),
         chapter(APPENDIX_KEY, "Foundation (appendix, not in Halmos)",
             "Halmos does not use Foundation; ZFC does. With it no set belongs to itself.",

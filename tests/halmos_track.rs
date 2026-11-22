@@ -643,6 +643,16 @@ fn solutions() -> BTreeMap<&'static str, Vec<&'static str>> {
         "<IP a ∉ a",
     ]);
     // Chapter 19
+    m.insert("halmos-17-2", vec![
+        "∀x(x ∈ a ⊃ x ⊆ a) . ∀u∀v((u ∈ a . v ∈ a) ⊃ (u ∈ v ∨ u = v ∨ v ∈ u)) . ∀s((s ⊆ a . ∃t(t ∈ s)) ⊃ ∃l(l ∈ s . ∀t(t ∈ s ⊃ ~(t ∈ l)))) :: Def 1",
+        "∀x(x ∈ a ⊃ x ⊆ a) . ∀u∀v((u ∈ a . v ∈ a) ⊃ (u ∈ v ∨ u = v ∨ v ∈ u)) :: Simp 4",
+        "∀x(x ∈ a ⊃ x ⊆ a) :: Simp 5",
+        "b ∈ a ⊃ b ⊆ a :: ∀E 6",
+        "b ⊆ a :: MP 7,3",
+        "∀x(x ∈ b ⊃ x ∈ a) :: Def 8",
+        "a ∈ b ⊃ a ∈ a :: ∀E 9",
+        "a ∈ a :: MP 10,2",
+    ]);
     m.insert("halmos-19-1", vec![
         "∃y(y ∈ {a}) ⊃ ∃y(y ∈ {a} . ~∃z(z ∈ y . z ∈ {a})) :: ∀E 1", "a = a :: =I", "a ∈ {a} :: Def 3",
         "∃y(y ∈ {a}) :: ∃I 4", "∃y(y ∈ {a} . ~∃z(z ∈ y . z ∈ {a})) :: MP 2,5", "IP> a ∈ a",
