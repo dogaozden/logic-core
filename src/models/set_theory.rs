@@ -387,6 +387,12 @@ pub fn halmos_track() -> Vec<TrackChapter> {
                     conclusion: "∃z(z ∈ s . ∀t(t ∈ s ⊃ (t = z ∨ ⟨z, t⟩ ∈ r)))",
                     hint: "Def unfolds WellOrd(r, a) into three conjuncts; take the last one, ∀E at s, then MP with the two premises about s." },
             ]),
+        chapter(17, "Ordinal Numbers",
+            "Ord(a): a is transitive, linearly ordered by ∈, and every nonempty subset of a has an ∈-least member. Ord is an abbreviation (Def).",
+            &[
+                Ex { title: "An ordinal is not a member of itself", level: Medium, premises: &["Ord(a)"], conclusion: "a ∉ a",
+                    hint: "IP: assume a ∈ a. Def unfolds Ord(a); take the subset {a} of a, which has a least member l; l = a, but a ∈ l is false, so a ∉ a. Use Def for the singleton." },
+            ]),
         chapter(APPENDIX_KEY, "Foundation (appendix, not in Halmos)",
             "Halmos does not use Foundation; ZFC does. With it no set belongs to itself.",
             &[
